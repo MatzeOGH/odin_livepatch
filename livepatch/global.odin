@@ -35,8 +35,6 @@ global_for :: proc(name: string, size: int) -> (addr: rawptr, created: bool) {
 	}
 
 	// 16-byte bump keeps every start 16-aligned, which covers a typical Odin global.
-	// ponytail: an over-16-aligned global (a large SIMD vector) is not honored; add
-	// per-symbol alignment if one ever needs it.
 	need := mem.align_forward_int(size, 16)
 	if global_store.current_block == nil || global_store.used + need > global_store.block_size {
 		bs := max(GLOBAL_BLOCK_SIZE, mem.align_forward_int(need, PAGE))

@@ -82,8 +82,6 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 				if disp < i64(min(i32)) || disp > i64(max(i32)) {
 					// Target more than 2GB away: route through a near-exe jump slot so the
 					// rel32 reaches. A safety net; near-exe mapping keeps targets in range.
-					// ponytail: assumes a code target (call/jmp) -- a far rip-relative
-					// *data* access cannot use a jump slot. Unseen; revisit if it appears.
 					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
 					name := symbol_name(usym, o.data, o.view.strtab_off)
 					slot := slot_for(name)

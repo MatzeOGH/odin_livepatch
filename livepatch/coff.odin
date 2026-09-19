@@ -107,8 +107,6 @@ coff_symbols :: proc "contextless" (data: []byte, sym_off, n_syms: int, cursor: 
 }
 
 section_name :: proc "contextless" (sh: ^Coff_Section_Header) -> string {
-	// ponytail: inline names only. Odin's fit in 8 bytes, so the `/offset` string-table
-	// form is unhandled until a name needs it.
 	return strings.truncate_to_byte(string(sh.name[:]), 0)
 }
 
