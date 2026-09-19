@@ -1,0 +1,7 @@
+# Build artifacts
+*.exe
+*.pdb
+*.obj
+
+# The patch output directory patch() writes next to the exe
+examples/livepatch/
