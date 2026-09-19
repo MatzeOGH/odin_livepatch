@@ -10,7 +10,7 @@ if not defined ODIN set ODIN=odin
 
 set PKG=%~dp0
 set EXE=%~dp0demo.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -extra-linker-flags:"/OPT:NOREF /OPT:NOICF"
+set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -extra-linker-flags:"/OPT:NOREF /OPT:NOICF"
 
 if "%~1"=="" (
     "%ODIN%" build "%PKG%" %FLAGS% -out:"%EXE%"

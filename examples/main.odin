@@ -69,7 +69,6 @@ main :: proc() {
 
 	state = new(State)
 	seed_state(state)
-	//prime_widgets(&ctx) // keep the microui widget set in the exe so live edits can add any of them
 
 	// Watch this program's own source directory for saved .odin files. watch_poll only
 	// reports a settled change, and the patch runs here in the main loop, not on a
@@ -196,23 +195,3 @@ load_image_texture :: proc(png_bytes: []u8) -> rl.Texture2D {
 _on_patched := proc(changed: []lp.Type_Change) {
 	state.reloads += 1
 }
-
-/*
-// microui builds its widgets lazily, so a widget the base build never calls is absent
-// from the exe and a live edit cannot add it. Referencing each one here (behind a
-// branch that never runs) forces them all into the image so any edit can reach them.
-prime_widgets :: proc(ctx: ^mu.Context) {
-	if rl.GetTime() < 0 {
-		_ = mu.button(ctx, "")
-		v: mu.Real
-		_ = mu.slider(ctx, &v, 0, 1)
-		b: bool
-		_ = mu.checkbox(ctx, "", &b)
-		buf: [1]u8
-		n: int
-		_ = mu.textbox(ctx, buf[:], &n)
-		_ = mu.header(ctx, "")
-		mu.text(ctx, "")
-	}
-}
-*/
