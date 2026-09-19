@@ -201,7 +201,7 @@ Then edit the `frame` proc in `main.odin`, save, and press F5 in the window. See
 This repository holds the package in `livepatch/`. The example imports it with a relative
 path (`import lp "../livepatch"`). For your own project, use a relative import, add a
 collection (`-collection:livepatch=path/to/livepatch`), or copy the package into your Odin
-`core/` and import it as `core:livepatch`. The snippets below use the `core:livepatch`
+`core/` and import it as `core:livepatch`.
 name.
 
 ### Non-Windows builds
