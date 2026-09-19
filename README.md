@@ -1,4 +1,4 @@
-# livepatch for odin for Windows x64
+# livepatch for Odin and Windows x64
 
 Change code in a running program and retarget it in place, no restart. A developer tool
 for fast iteration, Windows/x64 only. Not a shipping feature.
