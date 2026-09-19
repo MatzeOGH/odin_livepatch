@@ -7,7 +7,7 @@ package livepatch
 // program asks for thousands of names that never resolve. So exe_symbol resolves in three
 // tiers, cheapest first:
 //
-//   1. exe_index -- one SymEnumSymbolsW pass, name -> {addr, size}. Carries every function
+//   1. exe_index one SymEnumSymbolsW pass, name -> {addr, size}. Carries every function
 //      (the redirect targets) as an O(1) hit, and is where most lookups land.
 //   2. names that can never be a resolvable exe symbol: a miss with no scan (see
 //      worth_symfromname).
