@@ -12,8 +12,10 @@ for fast iteration, Windows/x64 only. Not a shipping feature.
 - Change the body of any named procedure. Callers run the new body on the next call.
 - Add new named procedures. Callers reach them through the patched call sites.
 - Keep package-level globals across every patch. New code reads the value the old code left.
-- Keep new globals, `@static`, and file-private globals across later patches. Each takes its
-  initial value on the patch that adds it, then persists like a base global.
+- Keep `@static` locals and file-private globals across every patch, first one included, when
+  the exe is built with `/MAP`. `patch()` reads their live address from the map.
+- Keep a global that a patch adds. It takes its initial value on the patch that adds it, then
+  persists like a base global.
 - Keep procedure pointers (`&proc`) valid. A stored pointer reaches the newest body.
 - Change a type's layout when a migration hook moves the live instances (see
   [Migrating state across a type change](#migrating-state-across-a-type-change)).
@@ -69,18 +71,24 @@ modes: no argument builds the exe, an output directory rebuilds to objects (this
 @echo off
 set PKG=%~dp0src
 set EXE=%~dp0game.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -extra-linker-flags:"/OPT:NOREF /OPT:NOICF"
+set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true
+set LINK=/OPT:NOREF /OPT:NOICF /MAP:%EXE:.exe=.map%
 
 if "%~1"=="" (
-    odin build "%PKG%" %FLAGS% -out:"%EXE%"
+    odin build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -out:"%EXE%"
 ) else (
-    odin build "%PKG%" %FLAGS% -build-mode:obj -out:"%~1/"
+    odin build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -build-mode:obj -out:"%~1/"
 )
 ```
 
 Every flag is mandatory. The same script builds the exe and the patch, so they can never
 diverge. **Always build through this script** — a build without `-debug` makes `patch()`
 silently do nothing and reset your globals.
+
+`/MAP` writes `<exe>.map` next to the exe. It lists the `@static` locals and file-private
+globals the PDB drops, so `patch()` can read their live address and keep their state.
+Only the exe build needs it. Without the map, these reset to their initializer on the
+first patch.
 
 ### 2. Call patch()
 
@@ -181,6 +189,28 @@ The timing report shows one line per phase, plus the object, symbol, redirect, a
 `build` is the compile step (the build script). The other phases are the in-process
 map, merge, relocate, type diff, and halt-world commit.
 
+## Linkers
+
+`patch()` reads the exe's `.map` to preserve `@static` locals and file-private globals
+(see [Setup](#1-build-script)). The map must be in the MSVC format. Choose the linker with
+Odin's `-linker:` flag.
+
+| `-linker:` | `/MAP` | `@static` / file-private preserved |
+| --- | --- | --- |
+| `default` (MSVC `link.exe`) | MSVC format | Yes |
+| `lld` | MSVC format | Yes |
+| `radlink` | Not supported | No |
+
+The default linker and `lld` both write the map format the parser reads, so the feature
+works with either. `radlink` does not implement `/MAP`: a build that passes the flag to it
+fails with `switch "MAP" is not implemented`. Drop `/MAP` from the script to link with
+`radlink`, or link with `default` or `lld` to keep the feature.
+
+Without a map, the feature degrades. It does not crash. Base-build `@static` locals and
+file-private globals reset to their initializer on the first patch, and file-private or
+`@static` thread-locals stay unresolved, so their objects turn dirty and lose their
+redirects. Package globals, procedure redirects, and patch-added globals still work.
+
 ## Try it
 
 `examples/` is a runnable raylib + microui scene wired for livepatch. It shows the whole
@@ -216,10 +246,12 @@ without any build tags of your own. Live patching only happens on Windows/x64.
 Preserved:
 
 - Package-level globals keep their value across patches.
-- **New globals, `@static`, and file-private globals** persist across later patches. The
-  patch that adds one seeds it from its initializer, then a process-lifetime store keyed by
-  a build-stable name carries the value forward. You no longer have to declare kept state as
-  a package-level global before the first build.
+- **`@static` locals and file-private globals** keep their value across every patch, the
+  first one included, when the exe is built with `/MAP`. `patch()` reads the map for their
+  live address and seeds a process-lifetime store from it. Without the map they reset on the
+  first patch.
+- **A global that a patch adds** takes its initial value on the patch that adds it, because
+  the base exe has no copy to seed from, then persists like a base global.
 - Procedure pointers (`&proc`) stay valid — they reach the newest body.
 - In-flight frames finish their old body; the next call runs new code.
 

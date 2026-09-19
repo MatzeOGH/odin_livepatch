@@ -114,10 +114,17 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				} else {
 					// No exe copy: a process-lifetime store, so the value survives later patches.
 					size := symbol_extent(&o, def_section, def_value)
-					store, created := global_for(canonical_data_name(name), size)
+					key := canonical_data_name(name)
+					store, created := global_for(key, size)
 					merged.defs[name] = store
 					if created {
-						append(&merged.new_globals, New_Global{store, body_address, size})
+						// Seed from the exe's live copy if the .map exposes this base-build
+						// @static / file-private (survives the first patch too); else the object copy.
+						src := body_address
+						if live, ok := exe_static_addr(key); ok {
+							src = live
+						}
+						append(&merged.new_globals, New_Global{store, src, size})
 					}
 				}
 			} else {

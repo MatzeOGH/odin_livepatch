@@ -43,9 +43,17 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 
 			if ty == IMAGE_REL_AMD64_SECREL {
 				// A thread-local reference. The 32-bit field is the variable's offset
-				// within the TLS block: its exe address minus the TLS template start. Only
-				// an exe-visible thread-local resolves (tls.odin).
+				// within the TLS block: its exe address minus the TLS template start. A
+				// package @thread_local resolves via DbgHelp (tls.odin); a file-private or
+				// @static one is invisible there, so fall back to the .map (map.odin).
 				tls_target := resolved[int(rel.symbol_table_index)]
+				if tls_target == nil {
+					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
+					name := symbol_name(usym, o.data, o.view.strtab_off)
+					if addr, ok := exe_static_addr(canonical_data_name(name)); ok {
+						tls_target = addr
+					}
+				}
 				start, have_tls := tls_template_start()
 				if tls_target == nil || !have_tls {
 					stats.unresolved += 1

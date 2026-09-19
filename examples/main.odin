@@ -4,7 +4,7 @@ package livepatch_demo
 // color, or physics value below), and the running program changes with no restart:
 //
 //   - Press F5 in the window, or
-//   - just save a .odin file -- the watcher rebuilds on the next frame.
+//   - just save a .odin file: the watcher rebuilds on the next frame.
 //
 // The balls keep their positions and velocities, because that state lives in a package
 // global that livepatch preserves across a patch.

@@ -10,10 +10,13 @@ if not defined ODIN set ODIN=odin
 
 set PKG=%~dp0
 set EXE=%~dp0demo.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -extra-linker-flags:"/OPT:NOREF /OPT:NOICF"
+set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true
+rem /MAP lists the @static and file-private globals the PDB drops, so patch() can preserve
+rem their state. The obj build links nothing and ignores it.
+set LINK=/OPT:NOREF /OPT:NOICF /MAP:%EXE:.exe=.map%
 
 if "%~1"=="" (
-    "%ODIN%" build "%PKG%" %FLAGS% -out:"%EXE%"
+    "%ODIN%" build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -out:"%EXE%"
 ) else (
-    "%ODIN%" build "%PKG%" %FLAGS% -build-mode:obj -out:"%~1/"
+    "%ODIN%" build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -build-mode:obj -out:"%~1/"
 )

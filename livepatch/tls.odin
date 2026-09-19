@@ -8,8 +8,8 @@ package livepatch
 // reads its own copy. The offset is the variable's live address minus the TLS template
 // start, both from the loaded image, so it is correct under ASLR.
 //
-// This reaches only a thread-local DbgHelp can see: a package-level @thread_local. A
-// file-private or @static thread-local stays unresolved.
+// DbgHelp sees only a package-level @thread_local. A file-private or @static thread-local
+// is resolved from the .map instead (map.odin), so it needs the exe built with /MAP.
 
 import win "core:sys/windows"
 
