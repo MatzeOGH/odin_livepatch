@@ -204,6 +204,13 @@ collection (`-collection:livepatch=path/to/livepatch`), or copy the package into
 `core/` and import it as `core:livepatch`. The snippets below use the `core:livepatch`
 name.
 
+### Non-Windows builds
+
+The package compiles on every target. On anything other than Windows, `patch()` and the
+watcher are no-op stubs (`patch()` returns `nil`, `watch_poll()` reports no change). So you
+can call them unconditionally and keep the package imported in a cross-platform project
+without any build tags of your own. Live patching only happens on Windows/x64.
+
 ## What survives a patch, what does not
 
 Preserved:
