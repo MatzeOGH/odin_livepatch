@@ -14,6 +14,7 @@ Error :: union {
 	No_Pdb,
 	No_Objects_Mapped,
 	Too_Few_Objects,
+	Unresolved_Symbol,
 	Commit_Failed,
 }
 
@@ -21,6 +22,7 @@ Build_Failed      :: struct {exit_code: int, output: string}
 No_Pdb            :: struct {}
 No_Objects_Mapped :: struct {}
 Too_Few_Objects   :: struct {count: int}
+Unresolved_Symbol :: struct {name: string, object: string}
 Commit_Failed     :: struct {}
 
 Type_Change :: struct {

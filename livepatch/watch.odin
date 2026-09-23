@@ -4,10 +4,10 @@ package livepatch
 // The source watcher reports settled source changes. It deliberately never calls patch():
 // the application applies the patch at its own safe point.
 
-import "core:fmt"
-import "core:os"
-import "core:path/filepath"
-import "core:strings"
+@(require) import "core:fmt"
+@(require) import "core:os"
+@(require) import "core:path/filepath"
+@(require) import "core:strings"
 import "core:time"
 import win "core:sys/windows"
 
@@ -129,7 +129,12 @@ when LIVEPATCH {
 		if watcher == nil || !watcher.active {
 			return
 		}
-		_ = win.CancelIoEx(watcher.directory, &watcher.overlapped)
+		if watcher.reading {
+			// The kernel writes the buffer until the cancel completes.
+			bytes: win.DWORD
+			_ = win.CancelIoEx(watcher.directory, &watcher.overlapped)
+			_ = win.GetOverlappedResult(watcher.directory, &watcher.overlapped, &bytes, true)
+		}
 		_ = win.CloseHandle(watcher.event)
 		_ = win.CloseHandle(watcher.directory)
 		delete(watcher.source_root, context.allocator)

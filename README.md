@@ -86,9 +86,8 @@ diverge. **Always build through this script** — a build without `-debug` makes
 silently do nothing and reset your globals.
 
 `/MAP` writes `<exe>.map` next to the exe. It lists the `@static` locals and file-private
-globals the PDB drops, so `patch()` can read their live address and keep their state.
-Only the exe build needs it. Without the map, these reset to their initializer on the
-first patch.
+globals the PDB drops, so `patch()` can find their live address and keep their state.
+Only the exe build needs it. Without it, `patch()` fails with `Unresolved_Symbol`.
 
 ### 2. Call patch()
 
@@ -160,7 +159,9 @@ migration completes. A suspended thread may hold an allocator, I/O, or applicati
 so hooks must not allocate, block, or acquire locks that another thread could hold.
 
 `patch()` returns `nil` on success, or a `livepatch.Error`
-(`Build_Failed`, `No_Pdb`, `No_Objects_Mapped`, `Too_Few_Objects`, `Commit_Failed`).
+(`Build_Failed`, `No_Pdb`, `No_Objects_Mapped`, `Too_Few_Objects`, `Unresolved_Symbol`,
+`Commit_Failed`). On an error, nothing changes. `Unresolved_Symbol` names what the new code
+references but cannot bind, such as a new `@thread_local`.
 Without `-define:LIVEPATCH=true` it compiles to `return nil`, so the call can stay in your
 shipping source permanently.
 
@@ -199,17 +200,12 @@ Odin's `-linker:` flag.
 | --- | --- | --- |
 | `default` (MSVC `link.exe`) | MSVC format | Yes |
 | `lld` | MSVC format | Yes |
-| `radlink` | Not supported | No |
+| `radlink` | Not supported | No: `patch()` fails |
 
 The default linker and `lld` both write the map format the parser reads, so the feature
 works with either. `radlink` does not implement `/MAP`: a build that passes the flag to it
 fails with `switch "MAP" is not implemented`. Drop `/MAP` from the script to link with
-`radlink`, or link with `default` or `lld` to keep the feature.
-
-Without a map, the feature degrades. It does not crash. Base-build `@static` locals and
-file-private globals reset to their initializer on the first patch, and file-private or
-`@static` thread-locals stay unresolved, so their objects turn dirty and lose their
-redirects. Package globals, procedure redirects, and patch-added globals still work.
+`radlink`, or link with `default` or `lld`.
 
 ## Try it
 
@@ -247,9 +243,7 @@ Preserved:
 
 - Package-level globals keep their value across patches.
 - **`@static` locals and file-private globals** keep their value across every patch, the
-  first one included, when the exe is built with `/MAP`. `patch()` reads the map for their
-  live address and seeds a process-lifetime store from it. Without the map they reset on the
-  first patch.
+  first one included. New code uses their exe storage, found in the map.
 - **A global that a patch adds** takes its initial value on the patch that adds it, because
   the base exe has no copy to seed from, then persists like a base global.
 - Procedure pointers (`&proc`) stay valid — they reach the newest body.

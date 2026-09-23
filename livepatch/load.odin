@@ -37,20 +37,23 @@ exe_base :: proc() -> uintptr {
 	return uintptr(win.GetModuleHandleW(nil))
 }
 
-// Reserves `size` bytes of executable memory within +/-2GB of `near`, so an x64 rel32 from
-// the exe can reach it. Probes outward from `near` in 1MB steps.
+// Blocks stay within +/-NEAR_WINDOW of the exe, so a rel32 reaches between any two.
+NEAR_WINDOW :: uintptr(0x3C00_0000) // 960MB
+
+// Reserves executable memory near the exe, probing outward in 1MB steps. nil if full.
 alloc_near :: proc(near: uintptr, size: int) -> rawptr {
 	step :: uintptr(0x0010_0000)
-	limit :: uintptr(0x6000_0000)
 	sz := win.SIZE_T(size)
-	for off := step; off <= limit; off += step {
+	for off := step; off <= NEAR_WINDOW; off += step {
 		if near > off {
 			if m := win.VirtualAlloc(rawptr(near - off), sz, win.MEM_COMMIT | win.MEM_RESERVE, win.PAGE_EXECUTE_READWRITE); m != nil {
 				return m
 			}
 		}
-		if m := win.VirtualAlloc(rawptr(near + off), sz, win.MEM_COMMIT | win.MEM_RESERVE, win.PAGE_EXECUTE_READWRITE); m != nil {
-			return m
+		if off + uintptr(size) <= NEAR_WINDOW {
+			if m := win.VirtualAlloc(rawptr(near + off), sz, win.MEM_COMMIT | win.MEM_RESERVE, win.PAGE_EXECUTE_READWRITE); m != nil {
+				return m
+			}
 		}
 	}
 	return nil
@@ -119,8 +122,7 @@ map_object :: proc(path: string, allocator := context.allocator) -> (o: Loaded_O
 }
 
 // Maps every .obj in a directory. The objects stay mapped as a set, so the merge can
-// resolve a symbol UNDEF in one against another's copy. `ok` is false only when the
-// directory cannot be listed.
+// resolve a symbol UNDEF in one against another's copy. `ok` is false if any step fails.
 map_all :: proc(dir: string, allocator := context.allocator) -> (objs: []Loaded_Object, ok: bool) {
 	entries, read_err := os.read_all_directory_by_path(dir, allocator)
 	if read_err != nil {
@@ -134,11 +136,12 @@ map_all :: proc(dir: string, allocator := context.allocator) -> (objs: []Loaded_
 			continue
 		}
 		path := filepath.join({dir, entry.name}, allocator) or_continue
-		if object, mapped := map_object(path, allocator); mapped {
-			append(&loaded, object)
-		} else {
+		object, mapped := map_object(path, allocator)
+		if !mapped {
 			delete(path, allocator)
+			return
 		}
+		append(&loaded, object)
 	}
 	return loaded[:], true
 }

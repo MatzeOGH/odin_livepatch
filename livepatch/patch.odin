@@ -45,8 +45,8 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	saved := make([dynamic]Saved_Prot, 0, n + 1, context.temp_allocator)
 	regions := make([dynamic]Range, 0, n, context.temp_allocator)
 
-	// Restore the page protections this call changed, on every exit path.
-	defer for s in saved {
+	// Reverse order: for a shared page, only the first entry holds the original protection.
+	defer #reverse for s in saved {
 		old: win.DWORD
 		win.VirtualProtect(s.addr, s.size, s.old, &old)
 	}
@@ -86,7 +86,11 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	handles: [dynamic]win.HANDLE
 	suspended := false
 	for _ in 0 ..< MAX_ATTEMPTS {
-		handles = suspend_others()
+		enumerated: bool
+		handles, enumerated = suspend_others()
+		if !enumerated {
+			return false
+		}
 		if !ip_conflicts(handles[:], regions[:]) {
 			suspended = true
 			break
@@ -139,7 +143,7 @@ write_redirect_bytes :: proc "contextless" (exe_address, body: rawptr) {
 // suspended, so a suspended thread can never hold the allocator lock. Enumeration uses the
 // toolhelp snapshot, which avoids an ntdll binding.
 @(private = "file")
-suspend_others :: proc() -> (handles: [dynamic]win.HANDLE) {
+suspend_others :: proc() -> (handles: [dynamic]win.HANDLE, ok: bool) {
 	snapshot := win.CreateToolhelp32Snapshot(win.TH32CS_SNAPTHREAD, 0)
 	if snapshot == win.INVALID_HANDLE_VALUE {
 		return
@@ -170,7 +174,7 @@ suspend_others :: proc() -> (handles: [dynamic]win.HANDLE) {
 	for h in handles {
 		win.SuspendThread(h)
 	}
-	return
+	return handles, true
 }
 
 // Reports whether any suspended thread's RIP is inside a region about to be overwritten.

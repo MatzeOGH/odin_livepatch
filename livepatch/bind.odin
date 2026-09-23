@@ -19,6 +19,7 @@ Slot_Target :: struct {
 
 // A writable data symbol absent from the exe, seeded from `src` (the relocated copy).
 New_Global :: struct {
+	key:   string,
 	store: rawptr,
 	src:   rawptr,
 	size:  int,
@@ -106,25 +107,24 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				} else {
 					slot := slot_for(name)
 					merged.defs[name] = slot
-					append(&merged.slot_targets, Slot_Target{slot, body_address})
+					if slot != nil {
+						append(&merged.slot_targets, Slot_Target{slot, body_address})
+					}
 				}
 			} else if (characteristics & IMAGE_SCN_MEM_WRITE) != 0 {
+				key := canonical_data_name(name)
 				if exe_address, _, found := exe_symbol(name); found {
 					merged.defs[name] = exe_address
+				} else if live, ok := exe_static_addr(key); ok {
+					// base-build @static or file-private, from the .map
+					merged.defs[name] = live
 				} else {
-					// No exe copy: a process-lifetime store, so the value survives later patches.
+					// added by a patch
 					size := symbol_extent(&o, def_section, def_value)
-					key := canonical_data_name(name)
 					store, created := global_for(key, size)
 					merged.defs[name] = store
-					if created {
-						// Seed from the exe's live copy if the .map exposes this base-build
-						// @static / file-private (survives the first patch too); else the object copy.
-						src := body_address
-						if live, ok := exe_static_addr(key); ok {
-							src = live
-						}
-						append(&merged.new_globals, New_Global{store, src, size})
+					if created && store != nil {
+						append(&merged.new_globals, New_Global{key, store, body_address, size})
 					}
 				}
 			} else {

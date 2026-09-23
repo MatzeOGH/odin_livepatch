@@ -25,7 +25,7 @@ BLOCK_SIZE :: 4096 // one near-exe block holds 256 slots
 
 @(private) jump_table: Jump_Table
 
-// The stable slot address for a link name.
+// The stable slot address for a link name, or nil if the near window has no room.
 slot_for :: proc(name: string) -> rawptr {
 	if jump_table.slots == nil {
 		jump_table.slots = make(map[string]rawptr)
@@ -37,6 +37,9 @@ slot_for :: proc(name: string) -> rawptr {
 	if jump_table.current_block == nil || jump_table.used_in_block + SLOT_SIZE > BLOCK_SIZE {
 		jump_table.current_block = alloc_near(exe_base(), BLOCK_SIZE)
 		jump_table.used_in_block = 0
+		if jump_table.current_block == nil {
+			return nil
+		}
 	}
 	slot := rawptr(uintptr(jump_table.current_block) + uintptr(jump_table.used_in_block))
 	jump_table.used_in_block += SLOT_SIZE

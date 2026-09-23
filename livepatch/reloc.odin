@@ -7,6 +7,7 @@ package livepatch
 // address (bind.odin). After the patches, this flushes the icache over the new code and
 // registers its unwind data with the OS.
 
+import "core:strings"
 import win "core:sys/windows"
 
 // TODO: move to core:sys/windows
@@ -25,8 +26,22 @@ foreign kernel32 {
 }
 
 Reloc_Stats :: struct {
-	unresolved:  int, // a target address was nil or out of range
-	unsupported: int, // an unknown relocation type
+	unresolved:   int,    // a target address was nil or out of range
+	unsupported:  int,    // an unknown relocation type
+	first_failed: string,
+}
+
+@(private = "file")
+reloc_failed :: proc(stats: ^Reloc_Stats, o: ^Loaded_Object, rel: ^Coff_Reloc, unsupported := false) {
+	if unsupported {
+		stats.unsupported += 1
+	} else {
+		stats.unresolved += 1
+	}
+	if stats.first_failed == "" {
+		usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
+		stats.first_failed = symbol_name(usym, o.data, o.view.strtab_off)
+	}
 }
 
 // `resolved` comes from resolve_symbols.
@@ -56,12 +71,12 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 				}
 				start, have_tls := tls_template_start()
 				if tls_target == nil || !have_tls {
-					stats.unresolved += 1
+					reloc_failed(&stats, o, &rel)
 					continue
 				}
 				off := i64(uintptr(tls_target)) - i64(start)
 				if off < 0 || off > i64(max(u32)) {
-					stats.unresolved += 1
+					reloc_failed(&stats, o, &rel)
 					continue
 				}
 				(^u32)(site)^ += u32(off)
@@ -70,7 +85,7 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 
 			target := resolved[int(rel.symbol_table_index)]
 			if target == nil {
-				stats.unresolved += 1
+				reloc_failed(&stats, o, &rel)
 				continue
 			}
 
@@ -88,17 +103,21 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 				next := i64(site) + 4 + extra
 				disp := i64(uintptr(target)) + addend - next
 				if disp < i64(min(i32)) || disp > i64(max(i32)) {
-					// Target more than 2GB away: route through a near-exe jump slot so the
-					// rel32 reaches. A safety net; near-exe mapping keeps targets in range.
-					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
-					name := symbol_name(usym, o.data, o.view.strtab_off)
-					slot := slot_for(name)
-					write_slot_target(slot, target)
-					disp = i64(uintptr(slot)) + addend - next
-					if disp < i64(min(i32)) || disp > i64(max(i32)) {
-						stats.unresolved += 1
+					// Only a DLL export is this far. A call/jmp (E8/E9) can use a slot; data cannot.
+					opcode := (^u8)(site - 1)^
+					if extra != 0 || (opcode != 0xE8 && opcode != 0xE9) {
+						reloc_failed(&stats, o, &rel)
 						continue
 					}
+					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
+					name := symbol_name(usym, o.data, o.view.strtab_off)
+					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
+					if slot == nil {
+						reloc_failed(&stats, o, &rel)
+						continue
+					}
+					write_slot_target(slot, target)
+					disp = i64(uintptr(slot)) + addend - next
 				}
 				(^i32)(site)^ = i32(disp)
 
@@ -114,13 +133,13 @@ relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_
 				addend := i64((^i32)(site)^)
 				off := i64(uintptr(local)) - i64(uintptr(o.block))
 				if off < 0 || off + addend < 0 || off + addend > i64(o.total) {
-					stats.unresolved += 1
+					reloc_failed(&stats, o, &rel)
 				} else {
 					(^u32)(site)^ = u32(off + addend)
 				}
 
 			case:
-				stats.unsupported += 1
+				reloc_failed(&stats, o, &rel, unsupported = true)
 			}
 		}
 	}

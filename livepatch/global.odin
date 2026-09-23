@@ -1,8 +1,8 @@
 #+build windows
 package livepatch
 
-// Global store: a stable, process-lifetime address for every writable data symbol the exe
-// does not have. Without it the merge would bind such a symbol to the fresh object copy, so
+// Global store: a stable, process-lifetime address for every writable data symbol that a
+// patch adds. Without it the merge would bind such a symbol to the fresh object copy, so
 // it would reset to its initializer on every patch. Keyed by a build-stable name and seeded
 // once (seed_new_globals), so the value carries across patches.
 //
@@ -25,6 +25,7 @@ GLOBAL_BLOCK_SIZE :: 64 * 1024
 @(private) global_store: Global_Store
 
 // `created` is true on the first sighting of `name`, when the caller must seed the block.
+// `addr` is nil if the near window has no room.
 // `name` must be the build-stable key from canonical_data_name.
 global_for :: proc(name: string, size: int) -> (addr: rawptr, created: bool) {
 	if global_store.entries == nil {
@@ -41,6 +42,9 @@ global_for :: proc(name: string, size: int) -> (addr: rawptr, created: bool) {
 		global_store.current_block = alloc_near(exe_base(), bs)
 		global_store.used = 0
 		global_store.block_size = bs
+		if global_store.current_block == nil {
+			return nil, false
+		}
 	}
 	addr = rawptr(uintptr(global_store.current_block) + uintptr(global_store.used))
 	global_store.used += need
@@ -100,5 +104,15 @@ global_reset :: proc() {
 seed_new_globals :: proc(merged: ^Merged) {
 	for g in merged.new_globals {
 		intrinsics.mem_copy(g.store, g.src, g.size)
+	}
+}
+
+// Drops the stores a failed patch created, so the next patch seeds them again.
+global_forget :: proc(merged: ^Merged) {
+	for g in merged.new_globals {
+		if g.key in global_store.entries {
+			key, _ := delete_key(&global_store.entries, g.key)
+			delete(key)
+		}
 	}
 }
