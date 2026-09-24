@@ -1,97 +1,60 @@
-#+build windows
+#+build windows amd64
 package livepatch
 
-// The write step: halt the world, redirect procedures, resume.
-//
-// After bind.odin and reloc.odin, the new code is mapped and relocated but nothing live
-// jumps to it yet. `commit` suspends every other thread, checks none is mid-overwrite,
-// writes a 5-byte `jmp rel32` at each exe entry, fills each slot, flushes the icache, and
-// resumes.
-//
-// Correctness rule: a patched procedure is only ever entered at its new entry. A frame
-// already in flight runs the old body to completion; later calls reach the new body
-// through the stable address. So the only unsafe state is a suspended thread whose RIP is
-// inside the 5 bytes being overwritten, [entry, entry+5). Deeper in the old body is safe.
-
+import "base:runtime"
+import "core:slice"
 import win "core:sys/windows"
 
-// CONTEXT_CONTROL (missing from core:sys/windows): selects the control registers,
-// including Rip, in GetThreadContext.
+foreign import kernel32 "system:Kernel32.lib"
+
+@(default_calling_convention = "system")
+foreign kernel32 {
+	FlushInstructionCache :: proc(hProcess: win.HANDLE, lpBaseAddress: rawptr, dwSize: win.SIZE_T) -> win.BOOL ---
+	GetThreadId           :: proc(Thread: win.HANDLE) -> win.DWORD ---
+}
+
+foreign import ntdll "system:ntdll.lib"
+
+@(default_calling_convention = "system")
+foreign ntdll {
+	NtGetNextThread :: proc(process, thread: win.HANDLE, access: win.DWORD, attributes, flags: win.ULONG, next: ^win.HANDLE) -> i32 ---
+}
+
 CONTEXT_CONTROL :: 0x0010_0001
 
-// Retry budget for the RIP check. Each miss resumes, sleeps 1 ms, and tries again.
+// Each attempt that fails the RIP check waits 1 ms
 MAX_ATTEMPTS :: 100
 
-// A half-open address range [lo, hi) covering a redirect's overwritten bytes.
+// [lo, hi)
 @(private = "file")
 Range :: struct {
 	lo: uintptr,
 	hi: uintptr,
 }
 
-// Suspends every other thread, runs the hooks around the publication, writes both merge
-// lists, then resumes. Returns false without changing any code if a redirect is out of
-// rel32 range, a page cannot be made writable, or no safe moment to write is found. Hooks
-// run while the other threads are paused, so they must not allocate, block, or take a lock
-// a paused thread could hold.
+// Returns false with no change if it finds no safe moment to write.
 commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []Type_Change) -> (ok: bool) {
-	n := len(merged.redirects)
-
-	Saved_Prot :: struct {
-		addr: rawptr,
-		old:  win.DWORD,
-		size: win.SIZE_T,
-	}
-	saved := make([dynamic]Saved_Prot, 0, n + 1, context.temp_allocator)
-	regions := make([dynamic]Range, 0, n, context.temp_allocator)
-
-	// Reverse order: for a shared page, only the first entry holds the original protection.
-	defer #reverse for s in saved {
-		old: win.DWORD
-		win.VirtualProtect(s.addr, s.size, s.old, &old)
-	}
-
-	// Prepare before any thread is suspended: validate each rel32 and make each redirect
-	// site writable. Slot blocks are already writable-and-executable from alloc_near.
+	regions := make([dynamic]Range, 0, len(merged.redirects), context.temp_allocator)
 	for r in merged.redirects {
-		rel := i64(uintptr(r.body)) - (i64(uintptr(r.exe_address)) + 5)
-		if rel < i64(min(i32)) || rel > i64(max(i32)) {
-			return false
+		s := sites[r.exe_address] or_return
+		if !s.written {
+			append(&regions, Range{uintptr(s.site), uintptr(s.site) + 5})
 		}
-		old: win.DWORD
-		if !win.VirtualProtect(r.exe_address, 5, win.PAGE_EXECUTE_READWRITE, &old) {
-			return false
-		}
-		append(&saved, Saved_Prot{r.exe_address, old, 5})
-		append(&regions, Range{uintptr(r.exe_address), uintptr(r.exe_address) + 5})
 	}
 
-	// Make the exe's runtime.type_table slice header writable for the swap (it sits in
-	// read-only .rdata). It is data, so no suspended thread can stop inside it: no region.
-	SLICE_HDR :: size_of(rawptr) + size_of(int)
-	tt_exe: rawptr
+	tt_exe: ^[]^runtime.Type_Info
 	if merged.type_table_new != nil {
-		if addr, _, found := exe_symbol("runtime::type_table"); found {
-			old: win.DWORD
-			if !win.VirtualProtect(addr, SLICE_HDR, win.PAGE_READWRITE, &old) {
-				return false
-			}
-			append(&saved, Saved_Prot{addr, old, SLICE_HDR})
-			tt_exe = addr
+		if addr, found := exe_symbol("runtime::type_table"); found {
+			tt_exe = (^[]^runtime.Type_Info)(addr)
 		}
 	}
 
-	// The halt window. If a thread sits inside a region being overwritten, resume, wait,
-	// and try again.
 	handles: [dynamic]win.HANDLE
 	suspended := false
 	for _ in 0 ..< MAX_ATTEMPTS {
-		enumerated: bool
-		handles, enumerated = suspend_others()
-		if !enumerated {
-			return false
-		}
-		if !ip_conflicts(handles[:], regions[:]) {
+		all: bool
+		handles, all = suspend_others()
+		if all && !ip_conflicts(handles[:], regions[:]) {
 			suspended = true
 			break
 		}
@@ -101,84 +64,90 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	if !suspended {
 		return false
 	}
-	// Pre hooks still reach old code; post hooks reach the new bodies after the redirects
-	// below are written.
 	fire_hooks(pre_hooks, changed)
 
-	// Inside the window: memory writes and cache flushes only. No allocation and no
-	// printing, because a suspended thread may hold the heap or console lock.
 	proc_handle := win.GetCurrentProcess()
 	for r in merged.redirects {
-		write_redirect_bytes(r.exe_address, r.body)
+		// The trampoline first, so a new site never reaches an old target.
+		s := sites[r.exe_address]
+		write_tramp_target(s.tramp, r.body)
+		if !s.written {
+			write_site_bytes(s)
+			FlushInstructionCache(proc_handle, s.site, 5)
+		}
 	}
 	for s in merged.slot_targets {
-		write_slot_target(s.slot, s.body)
+		write_tramp_target(s.slot, s.body)
 	}
-	for r in merged.redirects {
-		FlushInstructionCache(proc_handle, r.exe_address, 5)
-	}
-	// Swap the exe's type_table to the new build's array by copying the 16-byte slice
-	// header, so pruned or frozen exe code sees the new types. The halt prevents a torn
-	// read during a typeid lookup.
+	// Old exe code then also sees the new types
 	if tt_exe != nil {
-		(^[SLICE_HDR]u8)(tt_exe)^ = (^[SLICE_HDR]u8)(merged.type_table_new)^
+		tt_exe^ = (^[]^runtime.Type_Info)(merged.type_table_new)^
 	}
 	fire_hooks(post_hooks, changed)
 	resume_all(handles)
 
+	for r in merged.redirects {
+		if s, found := &sites[r.exe_address]; found {
+			s.written = true
+		}
+	}
 	return true
 }
 
-// Writes the 5-byte `E9 rel32` redirect. The caller validated the range and made the page
-// writable, so this only stores bytes. Contextless, so it is safe inside the halt window.
-@(private = "file")
-write_redirect_bytes :: proc "contextless" (exe_address, body: rawptr) {
-	rel := i32(i64(uintptr(body)) - (i64(uintptr(exe_address)) + 5))
-	(^u8)(exe_address)^ = 0xE9
-	(^i32)(rawptr(uintptr(exe_address) + 1))^ = rel
-}
-
-// Opens a handle to every other thread in this process, then suspends them all. The two
-// passes matter: every allocation happens in the first pass, before any thread is
-// suspended, so a suspended thread can never hold the allocator lock. Enumeration uses the
-// toolhelp snapshot, which avoids an ntdll binding.
-@(private = "file")
+// suspend other threads so we can patch
 suspend_others :: proc() -> (handles: [dynamic]win.HANDLE, ok: bool) {
-	snapshot := win.CreateToolhelp32Snapshot(win.TH32CS_SNAPTHREAD, 0)
-	if snapshot == win.INVALID_HANDLE_VALUE {
-		return
+	ids := make([dynamic]win.DWORD, context.temp_allocator)
+	scan_threads(&handles, &ids, grow = true)
+	reserve(&handles, 2 * len(handles) + 64)
+	reserve(&ids, cap(handles))
+	for t in handles {
+		win.SuspendThread(t)
 	}
-	defer win.CloseHandle(snapshot)
-
-	me_pid := win.GetCurrentProcessId()
-	me_tid := win.GetCurrentThreadId()
-
-	ACCESS :: win.THREAD_SUSPEND_RESUME | win.THREAD_GET_CONTEXT | win.THREAD_QUERY_LIMITED_INFORMATION
-
-	te: win.THREADENTRY32
-	te.dwSize = size_of(te)
-	if win.Thread32First(snapshot, &te) {
-		for {
-			if te.th32OwnerProcessID == me_pid && te.th32ThreadID != me_tid {
-				h := win.OpenThread(ACCESS, false, te.th32ThreadID)
-				if h != nil && h != win.INVALID_HANDLE_VALUE {
-					append(&handles, h)
-				}
-			}
-			if !win.Thread32Next(snapshot, &te) {
-				break
-			}
+	for {
+		found, fits := scan_threads(&handles, &ids, grow = false)
+		if !fits {
+			return handles, false
+		}
+		if !found {
+			return handles, true
 		}
 	}
-
-	for h in handles {
-		win.SuspendThread(h)
-	}
-	return handles, true
 }
 
-// Reports whether any suspended thread's RIP is inside a region about to be overwritten.
-@(private = "file")
+scan_threads :: proc(handles: ^[dynamic]win.HANDLE, ids: ^[dynamic]win.DWORD, grow: bool) -> (found, fits: bool) {
+	ACCESS :: win.THREAD_SUSPEND_RESUME | win.THREAD_GET_CONTEXT | win.THREAD_QUERY_LIMITED_INFORMATION
+
+	me := win.GetCurrentThreadId()
+	fits = true
+	cur, next: win.HANDLE
+	kept := false
+	for NtGetNextThread(win.GetCurrentProcess(), cur, ACCESS, 0, 0, &next) >= 0 {
+
+		if cur != nil && !kept {
+			win.CloseHandle(cur)
+		}
+		cur, kept = next, false
+		id := GetThreadId(cur)
+		if id == me || slice.contains(ids[:], id) {
+			continue
+		}
+		if !grow && len(handles) == cap(handles) {
+			fits = false
+			continue
+		}
+		if !grow {
+			win.SuspendThread(cur)
+		}
+		append(handles, cur)
+		append(ids, id)
+		kept, found = true, true
+	}
+	if cur != nil && !kept {
+		win.CloseHandle(cur)
+	}
+	return
+}
+
 ip_conflicts :: proc(handles: []win.HANDLE, regions: []Range) -> bool {
 	for h in handles {
 		ctx: win.CONTEXT
@@ -196,8 +165,6 @@ ip_conflicts :: proc(handles: []win.HANDLE, regions: []Range) -> bool {
 	return false
 }
 
-// Resumes and closes every handle, then frees the list, in reverse of the suspend order.
-@(private = "file")
 resume_all :: proc(handles: [dynamic]win.HANDLE) {
 	#reverse for h in handles {
 		win.ResumeThread(h)

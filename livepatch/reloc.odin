@@ -1,178 +1,168 @@
-#+build windows
+#+build windows amd64
 package livepatch
 
-// Applies the AMD64 relocations of one mapped object.
-//
-// A relocation patches a field in the new code or data so it points at a symbol's bound
-// address (bind.odin). After the patches, this flushes the icache over the new code and
-// registers its unwind data with the OS.
-
+import "core:slice"
 import "core:strings"
-import win "core:sys/windows"
 
-// TODO: move to core:sys/windows
-RUNTIME_FUNCTION :: struct {
-	begin_address:       u32,
-	end_address:         u32,
-	unwind_info_address: u32,
-}
+rewrite_object :: proc(o: ^Loaded_Object, merged: ^Merged, allocator := context.temp_allocator) -> (out: []byte, failed: string) {
+	data := o.data
+	v := o.view
 
-foreign import kernel32 "system:Kernel32.lib"
-
-@(default_calling_convention = "system")
-foreign kernel32 {
-	FlushInstructionCache :: proc(hProcess: win.HANDLE, lpBaseAddress: rawptr, dwSize: win.SIZE_T) -> win.BOOL ---
-	RtlAddFunctionTable :: proc(FunctionTable: ^RUNTIME_FUNCTION, EntryCount: win.DWORD, BaseAddress: win.DWORD64) -> win.BOOLEAN ---
-}
-
-Reloc_Stats :: struct {
-	unresolved:   int,    // a target address was nil or out of range
-	unsupported:  int,    // an unknown relocation type
-	first_failed: string,
-}
-
-@(private = "file")
-reloc_failed :: proc(stats: ^Reloc_Stats, o: ^Loaded_Object, rel: ^Coff_Reloc, unsupported := false) {
-	if unsupported {
-		stats.unsupported += 1
-	} else {
-		stats.unresolved += 1
+	if v.strtab_off + 4 > len(data) {
+		return nil, "<string table>"
 	}
-	if stats.first_failed == "" {
-		usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
-		stats.first_failed = symbol_name(usym, o.data, o.view.strtab_off)
+	strtab_size := int((^u32)(raw_data(data[v.strtab_off:]))^)
+	if v.strtab_off + strtab_size != len(data) {
+		return nil, "<string table not at end of object>"
 	}
-}
 
-// `resolved` comes from resolve_symbols.
-relocate_object :: proc(o: ^Loaded_Object, resolved: []rawptr) -> (stats: Reloc_Stats) {
-	for si in 0 ..< o.view.n_sections {
-		base := o.section_bases[si + 1]
-		if base == nil {
+	live := make(map[int]uintptr, allocator)
+	retarget := make(map[int]u32, allocator) // symbol index -> index of its `lp$N`
+	new_syms := make([dynamic]Coff_Symbol, allocator)
+	new_strs := make([dynamic]u8, allocator)
+	add_name :: proc(sym: ^Coff_Symbol, name: string, strs: ^[dynamic]u8, strtab_size: int) {
+		sym.name = {}
+		(^u32)(&sym.name[4])^ = u32(strtab_size + len(strs))
+		append(strs, name)
+		append(strs, 0)
+	}
+	cursor := 0
+	for sym, idx in coff_symbols(data, v.sym_off, v.n_syms, &cursor) {
+		name := symbol_name(sym, data, v.strtab_off)
+		if sym.section_number == 0 {
+			if a, found := merged.externals[name]; found {
+				live[idx] = uintptr(a)
+			}
+		}
+		addr, found := merged.defs[name]
+		if !found {
 			continue
 		}
+		if sym.section_number > 0 {
+			sh := section_header(data, v.sec_off, int(sym.section_number) - 1)
+			if is_object_local(sym, name, sh) {
+				continue
+			}
+			ch := sh.characteristics
+			if (ch & IMAGE_SCN_MEM_EXECUTE) == 0 && (ch & IMAGE_SCN_LNK_COMDAT) == 0 {
+				// Data: the definition becomes the undefined `lp$N`.
+				live[idx] = uintptr(addr)
+				retarget[idx] = u32(idx)
+				add_name(sym, alias_for(merged, name), &new_strs, strtab_size)
+				sym.section_number = 0
+				sym.value = 0
+				sym.storage_class = IMAGE_SYM_CLASS_EXTERNAL
+				continue
+			}
+		}
+		s: Coff_Symbol
+		add_name(&s, alias_for(merged, name), &new_strs, strtab_size)
+		s.storage_class = IMAGE_SYM_CLASS_EXTERNAL
+		live[idx] = uintptr(addr)
+		retarget[idx] = u32(v.n_syms + len(new_syms))
+		append(&new_syms, s)
+	}
 
-		for &rel in section_relocs(o.data, o.view.sec_off, si) {
-			site := uintptr(base) + uintptr(rel.virtual_address)
+	for si in 0 ..< v.n_sections {
+		sh := section_header(data, v.sec_off, si)
+		if section_name(sh) == ".drectve" {
+			strip_exports(data, sh)
+		}
+		if is_discarded_section(sh) {
+			continue
+		}
+		relocs := section_relocs(data, v.sec_off, si)
+		raw := int(sh.pointer_to_raw_data)
+		kept := 0
+		for rel in relocs {
+			rel := rel
 			ty := int(rel.type)
+			idx := int(rel.symbol_table_index)
+			site := raw + int(rel.virtual_address)
 
-			if ty == IMAGE_REL_AMD64_SECREL {
-				// A thread-local reference. The 32-bit field is the variable's offset
-				// within the TLS block: its exe address minus the TLS template start. A
-				// package @thread_local resolves via DbgHelp (tls.odin); a file-private or
-				// @static one is invisible there, so fall back to the .map (map.odin).
-				tls_target := resolved[int(rel.symbol_table_index)]
-				if tls_target == nil {
-					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
-					name := symbol_name(usym, o.data, o.view.strtab_off)
-					if addr, ok := exe_static_addr(canonical_data_name(name)); ok {
-						tls_target = addr
-					}
-				}
+			switch {
+			case ty == IMAGE_REL_AMD64_SECREL:
+				sym := coff_symbol(data, v.sym_off, idx)
+				name := symbol_name(sym, data, v.strtab_off)
+				tls_target, found := exe_symbol(name)
 				start, have_tls := tls_template_start()
-				if tls_target == nil || !have_tls {
-					reloc_failed(&stats, o, &rel)
-					continue
-				}
 				off := i64(uintptr(tls_target)) - i64(start)
-				if off < 0 || off > i64(max(u32)) {
-					reloc_failed(&stats, o, &rel)
-					continue
+				if !found || !have_tls || off < 0 || off > i64(max(u32)) || site + 4 > len(data) {
+					return nil, name
 				}
-				(^u32)(site)^ += u32(off)
-				continue
-			}
+				(^u32)(raw_data(data[site:]))^ += u32(off)
+				continue // removed
 
-			target := resolved[int(rel.symbol_table_index)]
-			if target == nil {
-				reloc_failed(&stats, o, &rel)
-				continue
-			}
-
-			switch ty {
-			case IMAGE_REL_AMD64_ADDR64:
-				// A 64-bit absolute pointer. Add the target to the field's addend.
-				(^u64)(site)^ += u64(uintptr(target))
-
-			case IMAGE_REL_AMD64_REL32 ..= IMAGE_REL_AMD64_REL32 + 5:
-				// A 32-bit relative reference (a call or RIP-relative access). The
-				// displacement runs from the next instruction to the target. REL32_1..5 add
-				// 1..5 bytes to that point.
-				extra := i64(ty - IMAGE_REL_AMD64_REL32)
-				addend := i64((^i32)(site)^)
-				next := i64(site) + 4 + extra
-				disp := i64(uintptr(target)) + addend - next
-				if disp < i64(min(i32)) || disp > i64(max(i32)) {
-					// Only a DLL export is this far. A call/jmp (E8/E9) can use a slot; data cannot.
-					opcode := (^u8)(site - 1)^
-					if extra != 0 || (opcode != 0xE8 && opcode != 0xE9) {
-						reloc_failed(&stats, o, &rel)
-						continue
+			case ty == IMAGE_REL_AMD64_ADDR64:
+				if target, ok := live[idx]; ok {
+					if site + 8 > len(data) {
+						return nil, "<relocation out of bounds>"
 					}
-					usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
-					name := symbol_name(usym, o.data, o.view.strtab_off)
-					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
-					if slot == nil {
-						reloc_failed(&stats, o, &rel)
-						continue
-					}
-					write_slot_target(slot, target)
-					disp = i64(uintptr(slot)) + addend - next
-				}
-				(^i32)(site)^ = i32(disp)
-
-			case IMAGE_REL_AMD64_ADDR32NB:
-				// A 32-bit address relative to the block base (an image RVA), so the target
-				// must be inside this object's block. .pdata uses this.
-				usym := coff_symbol(o.data, o.view.sym_off, int(rel.symbol_table_index))
-				tsn := int(usym.section_number)
-				local := target
-				if tsn > 0 && o.section_bases[tsn] != nil {
-					local = section_addr(o, tsn, int(usym.value))
-				}
-				addend := i64((^i32)(site)^)
-				off := i64(uintptr(local)) - i64(uintptr(o.block))
-				if off < 0 || off + addend < 0 || off + addend > i64(o.total) {
-					reloc_failed(&stats, o, &rel)
-				} else {
-					(^u32)(site)^ = u32(off + addend)
+					(^u64)(raw_data(data[site:]))^ += u64(target)
+					continue // removed
 				}
 
-			case:
-				reloc_failed(&stats, o, &rel, unsupported = true)
+			case ty >= IMAGE_REL_AMD64_REL32 && ty <= IMAGE_REL_AMD64_REL32 + 5:
+				if n, ok := retarget[idx]; ok {
+					rel.symbol_table_index = n
+				}
 			}
+			relocs[kept] = rel
+			kept += 1
 		}
+		set_reloc_count(data, v.sec_off, si, kept)
 	}
 
-	// Flush every code section so the CPU drops any stale icache bytes.
-	for si in 0 ..< o.view.n_sections {
-		sh := section_header(o.data, o.view.sec_off, si)
-		base := o.section_bases[si + 1]
-		if base == nil {
-			continue
-		}
-		if (u32(sh.characteristics) & IMAGE_SCN_MEM_EXECUTE) != 0 {
-			size := max(int(sh.virtual_size), int(sh.size_of_raw_data))
-			FlushInstructionCache(win.GetCurrentProcess(), base, win.SIZE_T(size))
-		}
-	}
+	// The new symbols go between the symbol table and the string table.
+	head := v.strtab_off
+	out = make([]byte, head + len(new_syms) * COFF_SYMBOL_SIZE + strtab_size + len(new_strs), allocator)
+	copy(out, data[:head])
+	copy(out[head:], slice.to_bytes(new_syms[:]))
+	tail := head + len(new_syms) * COFF_SYMBOL_SIZE
+	copy(out[tail:], data[v.strtab_off:])
+	copy(out[tail + strtab_size:], new_strs[:])
+	(^u32)(raw_data(out[tail:]))^ = u32(strtab_size + len(new_strs))
+	fh := (^Coff_File_Header)(raw_data(out))
+	fh.number_of_symbols = u32(v.n_syms + len(new_syms))
+	return out, ""
+}
 
-	// Register the .pdata unwind data, so a stack walk through the new code (debugger,
-	// crash dump, panic backtrace) is correct.
-	for si in 0 ..< o.view.n_sections {
-		sh := section_header(o.data, o.view.sec_off, si)
-		if section_name(sh) != ".pdata" {
-			continue
-		}
-		base := o.section_bases[si + 1]
-		if base == nil {
-			continue
-		}
-		size := max(int(sh.virtual_size), int(sh.size_of_raw_data))
-		count := u32(size / size_of(RUNTIME_FUNCTION))
-		if count > 0 {
-			RtlAddFunctionTable((^RUNTIME_FUNCTION)(base), win.DWORD(count), win.DWORD64(uintptr(o.block)))
-		}
+strip_exports :: proc(data: []byte, sh: ^Coff_Section_Header) {
+	start := int(sh.pointer_to_raw_data)
+	end := start + int(sh.size_of_raw_data)
+	if start <= 0 || end > len(data) {
+		return
 	}
-	return
+	text := data[start:end]
+	for i := 0; i < len(text); {
+		if text[i] != '/' && text[i] != '-' {
+			i += 1
+			continue
+		}
+		if i + 8 > len(text) || !strings.equal_fold(string(text[i + 1:i + 8]), "export:") {
+			i += 1
+			continue
+		}
+		// The directive ends at the first space outside quotes.
+		quoted := false
+		j := i
+		for j < len(text) && (quoted || (text[j] != ' ' && text[j] != 0)) {
+			if text[j] == '"' {
+				quoted = !quoted
+			}
+			text[j] = ' '
+			j += 1
+		}
+		i = j
+	}
+}
+
+set_reloc_count :: proc(data: []byte, sec_off, i, n: int) {
+	sh := section_header(data, sec_off, i)
+	if (sh.characteristics & IMAGE_SCN_LNK_NRELOC_OVFL) != 0 && sh.number_of_relocations == 0xFFFF {
+		r0 := (^Coff_Reloc)(raw_data(data[int(sh.pointer_to_relocations):]))
+		r0.virtual_address = u32(n + 1)
+		return
+	}
+	sh.number_of_relocations = u16(n)
 }

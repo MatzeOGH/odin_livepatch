@@ -1,164 +1,186 @@
-#+build windows
+#+build windows amd64
 package livepatch
 
+import "core:fmt"
+import "core:path/filepath"
 import "core:strings"
-
-// Binds every referenced symbol to one address across all patch objects. Pass A
-// (merge_symbols) picks each shared symbol's address and pass B (resolve_symbols) resolves
-// each object's symbol indices.
+import win "core:sys/windows"
 
 Redirect :: struct {
 	exe_address: rawptr,
 	body:        rawptr,
+	name:        string,
 }
 
 Slot_Target :: struct {
 	slot: rawptr,
 	body: rawptr,
-}
-
-// A writable data symbol absent from the exe, seeded from `src` (the relocated copy).
-New_Global :: struct {
-	key:   string,
-	store: rawptr,
-	src:   rawptr,
-	size:  int,
+	name: string,
 }
 
 Merged :: struct {
-	defs:           map[string]rawptr, // link name -> stable address
+	defs:           map[string]rawptr, // defined link name -> live address that references use
+	defined:        map[string]bool,   // external names that a patch object defines
+	externals:      map[string]rawptr, // undefined name that no object defines -> exe address
+	aliases:        map[string]string, // retargeted link name -> its `lp$N` alias
 	redirects:      [dynamic]Redirect,
 	slot_targets:   [dynamic]Slot_Target,
-	new_globals:    [dynamic]New_Global,
-	type_table_new: rawptr, // the new build's runtime.type_table slice header
+	new_globals:    [dynamic]string, // writable data that this patch adds
+	has_type_table: bool,
+	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the DLL
 }
 
-section_addr :: proc "contextless" (o: ^Loaded_Object, section_number, value: int) -> rawptr {
-	return rawptr(uintptr(o.section_bases[section_number]) + uintptr(value))
-}
-
-// Pass A. Assigns each shared defined symbol one stable address. First definer wins (COFF
-// COMDAT folding).
 merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
 	merged.defs = make(map[string]rawptr, allocator)
+	merged.defined = make(map[string]bool, allocator)
+	merged.externals = make(map[string]rawptr, allocator)
+	merged.aliases = make(map[string]string, allocator)
 	merged.redirects = make([dynamic]Redirect, allocator)
 	merged.slot_targets = make([dynamic]Slot_Target, allocator)
-	merged.new_globals = make([dynamic]New_Global, allocator)
+	merged.new_globals = make([dynamic]string, allocator)
+	seen := make(map[string]bool, allocator)
 
 	for &o in objects {
 		cursor := 0
 		for symbol, index in coff_symbols(o.data, o.view.sym_off, o.view.n_syms, &cursor) {
 			section_number := int(symbol.section_number)
 			name := symbol_name(symbol, o.data, o.view.strtab_off)
+			if section_number > 0 && symbol.storage_class == IMAGE_SYM_CLASS_EXTERNAL {
+				merged.defined[name] = true
+			}
 			def_section := section_number
-			def_value := int(symbol.value)
 			if section_number == 0 {
 				aux := weak_external_aux(o.data, o.view.sym_off, index, symbol) or_continue
+				merged.defined[name] = true
 				def := coff_symbol(o.data, o.view.sym_off, int(aux.tag_index))
 				def_section = int(def.section_number)
-				def_value = int(def.value)
 			}
 
-			if def_section <= 0 || o.section_bases[def_section] == nil {
-				continue // UNDEF with no default, ABS, or a section we did not map
+			if def_section <= 0 {
+				continue // UNDEF with no default, or ABS
 			}
 			section := section_header(o.data, o.view.sec_off, def_section - 1)
+			if is_discarded_section(section) {
+				continue
+			}
 
-			// Object-local binds to its own copy in Pass B, so it is never merged.
 			if section_number > 0 && is_object_local(symbol, name, section) {
 				continue
 			}
 			if strings.has_prefix(name, ".weak.") {
-				continue // never referenced by that mangled name
-			}
-			if section_name(section) == ".tls$" {
-				continue // reached through the TEB, not this copy (tls.odin)
-			}
-			if name in merged.defs {
 				continue
 			}
+			if section_name(section) == ".tls$" {
+				continue
+			}
+			if name in seen {
+				continue
+			}
+			seen[name] = true
 
-			body_address := section_addr(&o, def_section, def_value)
-			characteristics := u32(section.characteristics)
-
-			// The write step copies this header into the exe, so a typeid lookup finds the
-			// new build's types.
 			if name == "runtime::type_table" {
-				merged.type_table_new = body_address
+				merged.has_type_table = true
 			}
 
+			characteristics := section.characteristics
 			if (characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 {
-				// Never redirect or slot the livepatch package's own procedures (that would
-				// corrupt the patcher mid-run). Bind an exported proc to the exe, a
-				// file-private one to its own (dead) copy, so livepatch stays self-resolving
-				// and never goes dirty.
+				// Never redirect the patcher while it runs.
 				if strings.has_prefix(name, "livepatch::") {
-					if exe_address, _, found := exe_symbol(name); found {
+					if exe_address, found := exe_symbol(name); found {
 						merged.defs[name] = exe_address
-					} else {
-						merged.defs[name] = body_address
 					}
 					continue
 				}
-				// size >= 5: needs room for a 5-byte jmp rel32, else a slot.
-				if exe_address, size, found := exe_symbol(name); found && size >= 5 {
+				// Do not redirect a procedure with internal linkage
+				if symbol.storage_class == IMAGE_SYM_CLASS_STATIC {
+					continue
+				}
+				// A redirect needs 5 bytes for the jmp. Else the procedure gets a slot.
+				if exe_address, found := exe_symbol(name); found && exe_room(exe_address) >= 5 {
 					merged.defs[name] = exe_address
-					append(&merged.redirects, Redirect{exe_address, body_address})
-				} else {
-					slot := slot_for(name)
+					append(&merged.redirects, Redirect{exe_address, nil, name})
+				} else if slot := slot_for(name); slot != nil {
 					merged.defs[name] = slot
-					if slot != nil {
-						append(&merged.slot_targets, Slot_Target{slot, body_address})
-					}
+					append(&merged.slot_targets, Slot_Target{slot, nil, name})
 				}
 			} else if (characteristics & IMAGE_SCN_MEM_WRITE) != 0 {
-				key := canonical_data_name(name)
-				if exe_address, _, found := exe_symbol(name); found {
+				if symbol.storage_class == IMAGE_SYM_CLASS_STATIC && !strings.contains(name, "::") {
+					continue
+				}
+				if exe_address, found := exe_symbol(name); found {
 					merged.defs[name] = exe_address
-				} else if live, ok := exe_static_addr(key); ok {
-					// base-build @static or file-private, from the .map
+				} else if live, ok := global_store[canonical_data_name(name)]; ok {
 					merged.defs[name] = live
 				} else {
-					// added by a patch
-					size := symbol_extent(&o, def_section, def_value)
-					store, created := global_for(key, size)
-					merged.defs[name] = store
-					if created && store != nil {
-						append(&merged.new_globals, New_Global{key, store, body_address, size})
-					}
+					append(&merged.new_globals, name)
 				}
-			} else {
-				merged.defs[name] = body_address // rodata: object copy takes the new values
 			}
 		}
 	}
 	return
 }
 
-// Pass B. Resolves one object's symbol indices to addresses. Object-local symbols bind to
-// their own copy; the rest read the merged table first, then the exe.
-resolve_symbols :: proc(o: ^Loaded_Object, merged: ^Merged, allocator := context.temp_allocator) -> (resolved: []rawptr, unresolved: int) {
-	resolved = make([]rawptr, o.view.n_syms, allocator)
-	cursor := 0
-	for symbol, index in coff_symbols(o.data, o.view.sym_off, o.view.n_syms, &cursor) {
-		name := symbol_name(symbol, o.data, o.view.strtab_off)
-		section_number := int(symbol.section_number)
-
-		if section_number > 0 && o.section_bases[section_number] != nil {
-			section := section_header(o.data, o.view.sec_off, section_number - 1)
-			if is_object_local(symbol, name, section) {
-				resolved[index] = section_addr(o, section_number, int(symbol.value))
+// Binds each external that no patch object defines
+resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
+	for &o in objects {
+		cursor := 0
+		for symbol in coff_symbols(o.data, o.view.sym_off, o.view.n_syms, &cursor) {
+			if symbol.section_number != 0 || symbol.storage_class != IMAGE_SYM_CLASS_EXTERNAL {
 				continue
 			}
+			name := symbol_name(symbol, o.data, o.view.strtab_off)
+			if name in merged.defs || name in merged.defined || name in merged.externals {
+				continue
+			}
+			addr, found := exe_symbol(name)
+			if !found {
+				addr, found = loaded_export(name)
+			}
+			if !found {
+				return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+			}
+			if !is_near(uintptr(addr)) {
+				slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
+				if slot == nil {
+					return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+				}
+				write_tramp_target(slot, addr)
+				addr = slot
+			}
+			merged.externals[name] = addr
 		}
+	}
+	return nil
+}
 
-		if address, found := merged.defs[name]; found {
-			resolved[index] = address
-		} else if exe_addr, _, exe_found := exe_symbol(name); exe_found {
-			resolved[index] = exe_addr
-		} else if section_number == 0 {
-			unresolved += 1 // an unbound external: foreign import or build mismatch
+loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
+	if strings.contains(name, "::") {
+		return
+	}
+	modules: [1024]win.HMODULE
+	needed: win.DWORD
+	if !win.EnumProcessModules(win.GetCurrentProcess(), &modules[0], size_of(modules), &needed) {
+		return
+	}
+	cname := strings.clone_to_cstring(name, context.temp_allocator)
+	for m in modules[:min(int(needed) / size_of(win.HMODULE), len(modules))] {
+		if p := win.GetProcAddress(m, cname); p != nil {
+			return p, true
 		}
 	}
 	return
+}
+
+is_near :: proc(addr: uintptr) -> bool {
+	LIMIT :: uintptr(0x4000_0000) // 1GB, plus NEAR_WINDOW stays under 2GB
+	return abs(int(addr) - int(exe_base())) < int(LIMIT)
+}
+
+alias_for :: proc(merged: ^Merged, name: string) -> string {
+	if a, ok := merged.aliases[name]; ok {
+		return a
+	}
+	a := fmt.tprintf("lp$%d", len(merged.aliases))
+	merged.aliases[name] = a
+	return a
 }

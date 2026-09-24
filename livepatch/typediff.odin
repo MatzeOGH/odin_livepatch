@@ -1,29 +1,9 @@
-#+build windows
+#+build windows amd64
 package livepatch
 
-// The old-versus-new type diff that feeds the patch hooks (hooks.odin).
-//
-// This cannot reuse reflect.are_types_identical: it compares a named type by the pointer
-// identity of its base, and the two arrays hold different pointers for the same type, so
-// every type would look changed. types_equal matches named types by name and compares
-// layout by structure.
-//
-// Recursion stops at a pointer: a pointer is one word whatever it points at, so a change
-// behind it does not change the holder's layout, and it breaks recursive-type cycles. The
-// pointee is reported on its own. By-value nesting recurses fully.
-
 import "base:runtime"
+import "core:reflect"
 import "core:strings"
-
-// The old side: the exe's current type-info array, before commit swaps the header.
-exe_type_table :: proc() -> []^runtime.Type_Info {
-	return runtime.type_table
-}
-
-// The new side: the new build's array, from the relocated slice header merge_symbols captured.
-mapped_type_table :: proc(header: rawptr) -> []^runtime.Type_Info {
-	return (^[]^runtime.Type_Info)(header)^
-}
 
 diff_types :: proc(old_tbl, new_tbl: []^runtime.Type_Info, allocator := context.temp_allocator) -> []Type_Change {
 	old_by_name := make(map[string]^runtime.Type_Info, len(old_tbl), allocator)
@@ -53,14 +33,11 @@ diff_types :: proc(old_tbl, new_tbl: []^runtime.Type_Info, allocator := context.
 	return changed[:]
 }
 
-@(private = "file")
 qualified_name :: proc(named: runtime.Type_Info_Named, allocator: runtime.Allocator) -> string {
 	return strings.concatenate({named.pkg, "::", named.name}, allocator)
 }
 
-// A named pointee is compared by name only (enough at a pointer boundary, and breaks
-// cycles). An unnamed pointee (^int) has no cycle, so it is compared in full.
-@(private = "file")
+// Only a named type can make a cycle, so an unnamed pointee is compared in full.
 elem_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 	an, aok := named_of(a)
 	bn, bok := named_of(b)
@@ -78,7 +55,6 @@ named_of :: proc(t: ^runtime.Type_Info) -> (runtime.Type_Info_Named, bool) {
 	return t.variant.(runtime.Type_Info_Named)
 }
 
-// Whether two types have the same layout, matching named types by name (see the file comment).
 types_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 	if a == b {
 		return true
@@ -86,11 +62,12 @@ types_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a.size != b.size || a.align != b.align {
+	// A kind with no extra fields is equal after this check.
+	if a.size != b.size || a.align != b.align || reflect.union_variant_typeid(a.variant) != reflect.union_variant_typeid(b.variant) {
 		return false
 	}
 
-	switch x in a.variant {
+	#partial switch x in a.variant {
 	case runtime.Type_Info_Named:
 		y := b.variant.(runtime.Type_Info_Named) or_return
 		if x.name != y.name || x.pkg != y.pkg {
@@ -102,39 +79,14 @@ types_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 		y := b.variant.(runtime.Type_Info_Integer) or_return
 		return x.signed == y.signed && x.endianness == y.endianness
 
-	case runtime.Type_Info_Rune:
-		_ = b.variant.(runtime.Type_Info_Rune) or_return
-		return true
-
 	case runtime.Type_Info_Float:
 		y := b.variant.(runtime.Type_Info_Float) or_return
 		return x.endianness == y.endianness
-
-	case runtime.Type_Info_Complex:
-		_ = b.variant.(runtime.Type_Info_Complex) or_return
-		return true
-
-	case runtime.Type_Info_Quaternion:
-		_ = b.variant.(runtime.Type_Info_Quaternion) or_return
-		return true
 
 	case runtime.Type_Info_String:
 		y := b.variant.(runtime.Type_Info_String) or_return
 		return x.is_cstring == y.is_cstring && x.encoding == y.encoding
 
-	case runtime.Type_Info_Boolean:
-		_ = b.variant.(runtime.Type_Info_Boolean) or_return
-		return true
-
-	case runtime.Type_Info_Any:
-		_ = b.variant.(runtime.Type_Info_Any) or_return
-		return true
-
-	case runtime.Type_Info_Type_Id:
-		_ = b.variant.(runtime.Type_Info_Type_Id) or_return
-		return true
-
-	// Pointer family: stop at the pointer.
 	case runtime.Type_Info_Pointer:
 		y := b.variant.(runtime.Type_Info_Pointer) or_return
 		return elem_equal(x.elem, y.elem)
@@ -167,7 +119,6 @@ types_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 		y := b.variant.(runtime.Type_Info_Procedure) or_return
 		return x.variadic == y.variadic && x.convention == y.convention
 
-	// By-value composition: recurse fully.
 	case runtime.Type_Info_Array:
 		y := b.variant.(runtime.Type_Info_Array) or_return
 		return x.count == y.count && types_equal(x.elem, y.elem)
@@ -256,6 +207,5 @@ types_equal :: proc(a, b: ^runtime.Type_Info) -> bool {
 		return len(x.types) == len(y.types)
 	}
 
-	// Same size, align, and kind, with no extra fields to compare.
 	return true
 }

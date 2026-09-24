@@ -1,47 +1,28 @@
-#+build windows
+#+build windows amd64
 package livepatch
-
-// The source watcher reports settled source changes. It deliberately never calls patch():
-// the application applies the patch at its own safe point.
 
 @(require) import "core:fmt"
 @(require) import "core:os"
 @(require) import "core:path/filepath"
 @(require) import "core:strings"
-import "core:time"
-import win "core:sys/windows"
-
-Watch_Error :: union {
-	Watch_Start_Failed,
-	Watch_Failed,
-}
-
-Watch_Start_Failed :: struct {
-	output: string,
-}
-
-Watch_Failed :: struct {
-	output: string,
-}
-
-// Opaque to callers; pass it to watch_poll and watch_stop.
-Watcher :: struct {
-	directory:     win.HANDLE,
-	event:         win.HANDLE,
-	overlapped:    win.OVERLAPPED,
-	source_root:   string,
-	buffer:        [64 * 1024]u8,
-	pending:       bool,
-	pending_since: time.Tick,
-	reading:       bool,
-	active:        bool,
-}
-
-WATCH_DEBOUNCE :: 150 * time.Millisecond
+@(require) import "core:time"
+@(require) import win "core:sys/windows"
 
 when LIVEPATCH {
 
-	// A relative source_root is resolved against the running executable.
+	Watcher :: struct {
+		directory:     win.HANDLE,
+		event:         win.HANDLE,
+		overlapped:    win.OVERLAPPED,
+		source_root:   string,
+		buffer:        [64 * 1024]u8,
+		pending:       bool,
+		pending_since: time.Tick,
+		reading:       bool,
+		active:        bool,
+	}
+
+	// A relative source_root is relative to the exe directory.
 	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
 		root, root_err := watch_root(source_root)
 		if root_err != nil {
@@ -51,7 +32,7 @@ when LIVEPATCH {
 		wroot := win.utf8_to_utf16(root, context.temp_allocator)
 		if wroot == nil {
 			delete(root, context.allocator)
-			return {}, Watch_Start_Failed{output = "cannot encode the source directory path"}
+			return {}, Watch_Start_Failed{kind = .Out_Of_Memory}
 		}
 
 		directory := win.CreateFileW(
@@ -65,14 +46,14 @@ when LIVEPATCH {
 		)
 		if directory == win.INVALID_HANDLE_VALUE {
 			delete(root, context.allocator)
-			return {}, Watch_Start_Failed{output = fmt.tprintf("cannot watch %s: Windows error %d", source_root, win.GetLastError())}
+			return {}, Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(win.GetLastError())}
 		}
 
 		event := win.CreateEventW(nil, true, false, nil)
 		if event == nil {
 			win.CloseHandle(directory)
 			delete(root, context.allocator)
-			return {}, Watch_Start_Failed{output = fmt.tprintf("cannot create the watcher event: Windows error %d", win.GetLastError())}
+			return {}, Watch_Start_Failed{kind = .Cannot_Create_Event, os_error = os.Platform_Error(win.GetLastError())}
 		}
 
 		watcher = Watcher{
@@ -84,14 +65,11 @@ when LIVEPATCH {
 		return watcher, nil
 	}
 
-	// Reports one debounced source change. Non-blocking; call it from the main loop.
 	watch_poll :: proc(watcher: ^Watcher, debounce := WATCH_DEBOUNCE) -> (changed: bool, err: Watch_Error) {
 		if watcher == nil || !watcher.active {
 			return false, nil
 		}
 		if !watcher.reading {
-			// Windows retains the OVERLAPPED pointer, so start I/O only once the caller owns
-			// the watcher's stable storage (it is returned by value).
 			if err = watch_begin_read(watcher); err != nil {
 				return false, err
 			}
@@ -100,11 +78,10 @@ when LIVEPATCH {
 
 		switch win.WaitForSingleObject(watcher.event, 0) {
 		case win.WAIT_TIMEOUT:
-			// No new event: a prior write has settled.
 		case win.WAIT_OBJECT_0:
 			bytes: win.DWORD
 			if !win.GetOverlappedResult(watcher.directory, &watcher.overlapped, &bytes, false) {
-				return false, Watch_Failed{output = fmt.tprintf("source watcher failed: Windows error %d", win.GetLastError())}
+				return false, Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
 			}
 			if bytes == 0 || watch_buffer_affects_sources(watcher, int(bytes)) {
 				watcher.pending = true
@@ -114,7 +91,7 @@ when LIVEPATCH {
 				return false, err
 			}
 		case:
-			return false, Watch_Failed{output = fmt.tprintf("cannot poll the source watcher: Windows error %d", win.GetLastError())}
+			return false, Watch_Failed{kind = .Cannot_Poll, os_error = os.Platform_Error(win.GetLastError())}
 		}
 
 		if watcher.pending && time.tick_since(watcher.pending_since) >= debounce {
@@ -124,13 +101,11 @@ when LIVEPATCH {
 		return false, nil
 	}
 
-	// Safe to call repeatedly.
 	watch_stop :: proc(watcher: ^Watcher) {
 		if watcher == nil || !watcher.active {
 			return
 		}
 		if watcher.reading {
-			// The kernel writes the buffer until the cancel completes.
 			bytes: win.DWORD
 			_ = win.CancelIoEx(watcher.directory, &watcher.overlapped)
 			_ = win.GetOverlappedResult(watcher.directory, &watcher.overlapped, &bytes, true)
@@ -141,32 +116,30 @@ when LIVEPATCH {
 		watcher^ = {}
 	}
 
-	@(private = "file")
 	watch_root :: proc(source_root: string) -> (root: string, err: Watch_Error) {
 		if len(source_root) == 0 {
-			return "", Watch_Start_Failed{output = "the source directory path is empty"}
+			return "", Watch_Start_Failed{kind = .Empty_Path}
 		}
 
 		path := source_root
 		if !filepath.is_abs(path) {
-			exe, exe_err := os.get_executable_path(context.temp_allocator)
+			exe_dir, exe_err := os.get_executable_directory(context.temp_allocator)
 			if exe_err != nil {
-				return "", Watch_Start_Failed{output = "cannot find the running executable path"}
+				return "", Watch_Start_Failed{kind = .Exe_Path_Unknown}
 			}
-			path, exe_err = filepath.join({os.dir(exe), path}, context.temp_allocator)
+			path, exe_err = filepath.join({exe_dir, path}, context.temp_allocator)
 			if exe_err != nil {
-				return "", Watch_Start_Failed{output = "out of memory building the source directory path"}
+				return "", Watch_Start_Failed{kind = .Out_Of_Memory}
 			}
 		}
 
 		stored_root, clone_err := strings.clone(path, context.allocator)
 		if clone_err != nil {
-			return "", Watch_Start_Failed{output = "out of memory storing the source directory path"}
+			return "", Watch_Start_Failed{kind = .Out_Of_Memory}
 		}
 		return stored_root, nil
 	}
 
-	@(private = "file")
 	watch_begin_read :: proc(watcher: ^Watcher) -> Watch_Error {
 		watcher.overlapped = win.OVERLAPPED{hEvent = watcher.event}
 		_ = win.ResetEvent(watcher.event)
@@ -181,29 +154,28 @@ when LIVEPATCH {
 			nil,
 		)
 		if !ok && win.GetLastError() != win.ERROR_IO_PENDING {
-			return Watch_Failed{output = fmt.tprintf("cannot watch the source directory: Windows error %d", win.GetLastError())}
+			return Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
 		}
 		watcher.reading = true
 		return nil
 	}
 
-	@(private = "file")
 	watch_buffer_affects_sources :: proc(watcher: ^Watcher, bytes: int) -> bool {
 		offset := 0
 		header_size := int(offset_of(win.FILE_NOTIFY_INFORMATION, FileName))
 		for {
 			if offset + header_size > bytes {
-				return true // A malformed record may hide a source change; rebuild safely.
+				return true // a malformed record can hide a source change
 			}
 			info := (^win.FILE_NOTIFY_INFORMATION)(raw_data(watcher.buffer[offset:]))
 			name_bytes := int(info.FileNameLength)
-			if name_bytes < 0 || name_bytes % size_of(u16) != 0 || name_bytes > bytes - offset - header_size {
+			if name_bytes % size_of(u16) != 0 || name_bytes > bytes - offset - header_size {
 				return true
 			}
 
 			name16 := ([^]u16)(raw_data(info.FileName[:]))[:name_bytes / size_of(u16)]
 			name := win.utf16_to_utf8(name16, context.temp_allocator) or_else ""
-			if watch_change_affects_sources(watcher, info.Action, name) {
+			if watch_change_affects_sources(name) {
 				return true
 			}
 
@@ -218,47 +190,9 @@ when LIVEPATCH {
 		}
 	}
 
-	@(private = "file")
-	watch_change_affects_sources :: proc(watcher: ^Watcher, action: win.DWORD, name: string) -> bool {
-		// Ignore the patch object directory: patch() rewrites it every patch, which would
-		// otherwise trigger another patch and loop forever. Comes first, before the
-		// conservative removed-directory rule below reacts to its removal.
-		if name == PATCH_OUTPUT_DIRNAME || strings.has_prefix(name, PATCH_OUTPUT_DIRNAME + "\\") {
-			return false
-		}
-		if strings.has_suffix(name, ".odin") {
-			return true
-		}
-		if action == win.FILE_ACTION_REMOVED || action == win.FILE_ACTION_RENAMED_OLD_NAME {
-			// Windows does not say if a deleted entry was a file or directory, and a removed
-			// directory may have held source. Rebuild conservatively.
-			return true
-		}
-		if action == win.FILE_ACTION_ADDED || action == win.FILE_ACTION_RENAMED_NEW_NAME {
-			path, join_err := filepath.join({watcher.source_root, name}, context.temp_allocator)
-			if join_err != nil {
-				return true
-			}
-			info, stat_err := os.stat(path, context.temp_allocator)
-			if stat_err != nil {
-				return false
-			}
-			defer os.file_info_delete(info, context.temp_allocator)
-			return info.type == .Directory
-		}
-		return false
+	// ignore anything but .odin files
+	watch_change_affects_sources :: proc(name: string) -> bool {
+		return len(name) >= 5 && strings.equal_fold(name[len(name) - 5:], ".odin")
 	}
-
-} else {
-
-	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
-		return {}, nil
-	}
-
-	watch_poll :: proc(watcher: ^Watcher, debounce := WATCH_DEBOUNCE) -> (changed: bool, err: Watch_Error) {
-		return false, nil
-	}
-
-	watch_stop :: proc(watcher: ^Watcher) {}
 
 }

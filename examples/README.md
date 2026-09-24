@@ -35,8 +35,8 @@ demo.exe
 
 The first form of the script builds `demo.exe` and `demo.pdb`. The `patch()` call uses
 the second form of the same script to rebuild the objects, so the two builds can never
-diverge. Every flag in the script is required. A build without `-debug` makes `patch()`
-do nothing.
+diverge. Every flag in the script is required. A build without `/MAP` makes `patch()`
+fail with `No_Map`.
 
 ## The demo
 
@@ -52,9 +52,43 @@ do nothing.
    appears, and the balls keep moving from their old positions. The on-screen **reloads**
    counter goes up, because the post-patch hook increments it.
 
-`patch()` blocks while it rebuilds and applies the patch, so the window freezes for a
-second or two. On a build error it prints the error and leaves the running program
-unchanged.
+The demo builds the patch with `patch_start()` on a worker thread, so the window keeps
+running during the build. `patch_poll()` applies the patch at the top of the next frame. On
+a build error the demo shows the first line of the error in red and leaves the running
+program unchanged.
+
+## Feature demos
+
+`main.odin` has code for more livepatch features behind the constants `DEMO_1` to
+`DEMO_6` at the top of the file. To enable a feature while the demo runs, set its constant
+to `true` and save. You can enable them in any order.
+
+| Demo | Feature | What you see |
+| --- | --- | --- |
+| 1 | Type layout change with migration | Adds a `trail` field to `Ball`. The balls keep moving and get trails. The post-patch hook records the old and new `State` types, and `after_patch` copies each field by name into a block with the new layout. |
+| 2 | A stored procedure pointer | `ball_draw` holds a pointer to `draw_ball` from the base build. After the patch, the balls get a white outline, because the pointer calls the newest body. |
+| 3 | A `@static` local | A frame counter in the panel. It starts at 0 on the patch that adds it, then does not reset on later patches. |
+| 4 | A global that a patch adds | A **Wind** slider. `wind` starts at 40 on the patch that adds it, then keeps the slider value on later patches. |
+| 5 | A procedure that a patch adds | `draw_grid` draws a grid behind the balls. |
+| 6 | A build error | The error shows in red at the bottom of the window, and the old code keeps running. Set it back to `false` and save to continue. |
+
+To go back, set the constant to `false` and save. For demo 1, this is one more layout
+change: `trail` becomes an array with no elements, and the migration drops the old trail
+points.
+
+The picture in the corner also shows a hook: change `#load("image_v1.png")` to
+`image_v2.png` and save. The post-patch hook compares the hash of the new bytes with the
+hash of the loaded bytes, and `after_patch` loads the new texture when they differ.
+
+## Debugging
+
+Start `demo.exe` under a debugger, for example RAD Debugger or VS Code with the
+`cppvsdbg` debugger. Set a breakpoint in `frame`, edit `frame`, and save. After the patch,
+the breakpoint hits in the new code in `livepatch_mod/lp_<pid>_g<N>.dll`, with locals and a
+full call stack.
+
+You can set and remove breakpoints before and after a patch. See the main README for the
+one rare case that `patch()` refuses.
 
 ## What you can and cannot change live
 
@@ -65,8 +99,9 @@ unchanged.
   a live edit can add any of them.
 - **Needs a full rebuild:** a call to a procedure that the base build never compiled in.
   Its code is not in the host, and a patch object does not carry it. Rebuild the host once.
-- **Also live, through the migration path:** a new field on `State`. New globals and new
-  struct fields are zero at first and preserved from then on.
+- **Also live, through the migration path:** a new, removed, or reordered field on `State`
+  or `Ball`. `after_patch` copies each field by name. A new field is zero at first and
+  preserved from then on.
 
 ## Files
 
@@ -78,8 +113,8 @@ unchanged.
 
 ## Non-livepatch build
 
-The demo runs the same without livepatch. `patch()` is then a no-op that returns an error
-you can ignore:
+The demo runs the same without livepatch. `patch_start()` and `patch_poll()` are then
+no-ops that return `nil`, and the watcher reports no change:
 
 ```bat
 odin build . -out:demo.exe
