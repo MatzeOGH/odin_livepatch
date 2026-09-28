@@ -2,10 +2,12 @@
 *.exe
 *.pdb
 *.obj
+*.o
+examples/demo
 
 # The patch output directory patch() writes next to the exe
 examples/livepatch/
-# The patch DLLs, PDBs and maps that patch() writes next to the exe
+# The patch modules (DLLs, PDBs, ELF images) and maps that patch() writes next to the exe
 livepatch_mod/
 *.map
 *.rdi
