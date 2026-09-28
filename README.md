@@ -83,8 +83,19 @@ if "%~1"=="" (
 )
 ```
 
-Every flag is mandatory. The same script builds the exe and the patch, so they can never
-diverge. **Always build through this script.**
+The `-o:none` build is the default here. It gives the fastest rebuild and lets a debugger
+break on any procedure. You can also build with `-o:speed` or `-o:minimal` for a realtime app
+that needs the speed. A patch stays correct at any level, because each patch rebuilds the
+whole program to objects and redirects every symbol. The new code replaces the old code in
+full.
+
+Two flags must not change for this to hold. Keep `-use-separate-modules`, so the compiler
+inlines only inside one package. Do not turn on cross-module optimization (LTO), so a
+redirected symbol always has its own body. Odin does not enable LTO at any `-o` level by
+default.
+
+The other flags are mandatory. The same script builds the exe and the patch, so they can
+never diverge. **Always build through this script.**
 
 `/MAP` writes `<exe>.map` next to the exe. `patch()` finds every exe symbol in it:
 procedures, globals, `@static` locals and file-private globals. Only the exe build needs
