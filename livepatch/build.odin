@@ -34,13 +34,13 @@ run_build :: proc(build_script, outdir: string) -> Error {
 
 	// If ODIN is not set, the script uses the compiler that built this exe.
 	if _, found := os.lookup_env("ODIN", context.temp_allocator); !found {
-		if odin, join_err := filepath.join({ODIN_ROOT, "odin.exe"}, context.temp_allocator); join_err == nil {
+		if odin, join_err := filepath.join({ODIN_ROOT, ODIN_EXE_NAME}, context.temp_allocator); join_err == nil {
 			_ = os.set_env("ODIN", odin)
 		}
 	}
 
 	desc := os.Process_Desc{
-		command = []string{"cmd", "/c", script, outdir},
+		command = build_command(script, outdir),
 	}
 	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
 	if exec_err != nil {

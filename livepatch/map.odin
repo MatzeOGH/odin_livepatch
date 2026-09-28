@@ -7,20 +7,12 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 
-exe_map:    map[string]uintptr // canonical name -> live address
-exe_starts: []uintptr          // sorted live address of every map symbol
-
-load_exe_map :: proc(exe_path: string) {
+load_exe_symbols :: proc(exe_path: string) {
 	starts := make([dynamic]uintptr)
 	map_path := strings.concatenate({strings.trim_suffix(exe_path, filepath.ext(exe_path)), ".map"}, context.temp_allocator)
 	exe_map = read_map(map_path, exe_base(), context.allocator, &starts)
 	slice.sort(starts[:])
 	exe_starts = starts[:]
-}
-
-exe_symbol :: proc(name: string) -> (addr: rawptr, ok: bool) {
-	a, found := exe_map[canonical_data_name(name)]
-	return rawptr(a), found
 }
 
 // Reads an MSVC-format map

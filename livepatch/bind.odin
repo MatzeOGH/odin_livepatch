@@ -4,7 +4,6 @@ package livepatch
 import "core:fmt"
 import "core:path/filepath"
 import "core:strings"
-import win "core:sys/windows"
 
 Redirect :: struct {
 	exe_address: rawptr,
@@ -27,7 +26,7 @@ Merged :: struct {
 	slot_targets:   [dynamic]Slot_Target,
 	new_globals:    [dynamic]string, // writable data that this patch adds
 	has_type_table: bool,
-	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the DLL
+	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the patch module
 }
 
 merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
@@ -42,35 +41,12 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 
 	for &o in objects {
 		cursor := 0
-		for symbol, index in coff_symbols(o.data, o.view.sym_off, o.view.n_syms, &cursor) {
-			section_number := int(symbol.section_number)
-			name := symbol_name(symbol, o.data, o.view.strtab_off)
-			if section_number > 0 && symbol.storage_class == IMAGE_SYM_CLASS_EXTERNAL {
+		for symbol in object_symbols(&o, &cursor) {
+			name := symbol.name
+			if symbol.provides {
 				merged.defined[name] = true
 			}
-			def_section := section_number
-			if section_number == 0 {
-				aux := weak_external_aux(o.data, o.view.sym_off, index, symbol) or_continue
-				merged.defined[name] = true
-				def := coff_symbol(o.data, o.view.sym_off, int(aux.tag_index))
-				def_section = int(def.section_number)
-			}
-
-			if def_section <= 0 {
-				continue // UNDEF with no default, or ABS
-			}
-			section := section_header(o.data, o.view.sec_off, def_section - 1)
-			if is_discarded_section(section) {
-				continue
-			}
-
-			if section_number > 0 && is_object_local(symbol, name, section) {
-				continue
-			}
-			if strings.has_prefix(name, ".weak.") {
-				continue
-			}
-			if section_name(section) == ".tls$" {
+			if symbol.kind == .Skipped || symbol.kind == .Undefined {
 				continue
 			}
 			if name in seen {
@@ -82,8 +58,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				merged.has_type_table = true
 			}
 
-			characteristics := section.characteristics
-			if (characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 {
+			#partial switch symbol.kind {
+			case .Code:
 				// Never redirect the patcher while it runs.
 				if strings.has_prefix(name, "livepatch::") {
 					if exe_address, found := exe_symbol(name); found {
@@ -92,7 +68,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 					continue
 				}
 				// Do not redirect a procedure with internal linkage
-				if symbol.storage_class == IMAGE_SYM_CLASS_STATIC {
+				if symbol.local {
 					continue
 				}
 				// A redirect needs 5 bytes for the jmp. Else the procedure gets a slot.
@@ -103,8 +79,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 					merged.defs[name] = slot
 					append(&merged.slot_targets, Slot_Target{slot, nil, name})
 				}
-			} else if (characteristics & IMAGE_SCN_MEM_WRITE) != 0 {
-				if symbol.storage_class == IMAGE_SYM_CLASS_STATIC && !strings.contains(name, "::") {
+			case .Data:
+				if symbol.local && !strings.contains(name, "::") {
 					continue
 				}
 				if exe_address, found := exe_symbol(name); found {
@@ -124,11 +100,11 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	for &o in objects {
 		cursor := 0
-		for symbol in coff_symbols(o.data, o.view.sym_off, o.view.n_syms, &cursor) {
-			if symbol.section_number != 0 || symbol.storage_class != IMAGE_SYM_CLASS_EXTERNAL {
+		for symbol in object_symbols(&o, &cursor) {
+			if symbol.kind != .Undefined {
 				continue
 			}
-			name := symbol_name(symbol, o.data, o.view.strtab_off)
+			name := symbol.name
 			if name in merged.defs || name in merged.defined || name in merged.externals {
 				continue
 			}
@@ -151,24 +127,6 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 		}
 	}
 	return nil
-}
-
-loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
-	if strings.contains(name, "::") {
-		return
-	}
-	modules: [1024]win.HMODULE
-	needed: win.DWORD
-	if !win.EnumProcessModules(win.GetCurrentProcess(), &modules[0], size_of(modules), &needed) {
-		return
-	}
-	cname := strings.clone_to_cstring(name, context.temp_allocator)
-	for m in modules[:min(int(needed) / size_of(win.HMODULE), len(modules))] {
-		if p := win.GetProcAddress(m, cname); p != nil {
-			return p, true
-		}
-	}
-	return
 }
 
 is_near :: proc(addr: uintptr) -> bool {

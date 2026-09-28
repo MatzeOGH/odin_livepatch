@@ -4,7 +4,6 @@ package livepatch
 import "base:runtime"
 import "core:slice"
 import "core:strings"
-import win "core:sys/windows"
 
 MIRROR_DELTA :: uintptr(0x3333332F) // site + 5 + i32(0xCCCCCCCC) == site - MIRROR_DELTA
 
@@ -22,17 +21,17 @@ Redirect_Site :: struct {
 @(private) mirror_lo:   uintptr
 @(private) mirror_hi:   uintptr
 @(private) used_mirror: map[uintptr]bool // exe addresses whose mirror slot holds a stub for another site
-@(private) exe_file:    []byte           // the exe file on disk
+@(private) exe_file:    []byte           // the exe file on disk, for exe_file_byte
 
 // Call before any other near-exe allocation can take the range.
 mirror_init :: proc() {
 	base := exe_base()
-	size := uintptr(pe_headers(rawptr(base)).OptionalHeader.SizeOfImage)
+	size := exe_image_size()
 	lo := (base - MIRROR_DELTA) & ~uintptr(0xFFFF)
 	hi := base + size - MIRROR_DELTA + 16
-	m := win.VirtualAlloc(rawptr(lo), win.SIZE_T(hi - lo), win.MEM_RESERVE | win.MEM_COMMIT, win.PAGE_EXECUTE_READWRITE)
+	m := page_alloc_at(lo, int(hi - lo), commit = true)
 	if m != nil && m != rawptr(lo) {
-		win.VirtualFree(m, 0, win.MEM_RELEASE)
+		page_free(m)
 		m = nil
 	}
 	mirror_ok = m != nil
@@ -194,41 +193,6 @@ place_stub :: proc(target, tramp: rawptr, variant: bool) -> bool {
 	return true
 }
 
-// Refuses memory that it did not commit or reserve itself.
-commit_at :: proc(t: uintptr, n: int) -> bool {
-	for page := t & ~uintptr(0xFFF); page < t + uintptr(n); page += 0x1000 {
-		info: win.MEMORY_BASIC_INFORMATION
-		if win.VirtualQuery(rawptr(page), &info, size_of(info)) == 0 {
-			return false
-		}
-		granule := page & ~uintptr(0xFFFF)
-		switch info.State {
-		case win.MEM_COMMIT:
-			if page not_in own_pages {
-				return false
-			}
-			continue
-		case win.MEM_FREE:
-			if win.VirtualAlloc(rawptr(granule), 0x10000, win.MEM_RESERVE, win.PAGE_NOACCESS) == nil {
-				return false
-			}
-			own_granules[granule] = true
-		case:
-			if granule not_in own_granules {
-				return false
-			}
-		}
-		if win.VirtualAlloc(rawptr(page), 0x1000, win.MEM_COMMIT, win.PAGE_EXECUTE_READWRITE) == nil {
-			return false
-		}
-		own_pages[page] = true
-	}
-	return true
-}
-
-own_pages:    map[uintptr]bool
-own_granules: map[uintptr]bool // 64KB reservations
-
 tramp_block: rawptr
 tramp_used:  int
 slots:       map[string]rawptr
@@ -300,7 +264,7 @@ write_jmp_rel32 :: proc "contextless" (at, target: rawptr) {
 // The bytes up to the next symbol or the section end.
 exe_room :: proc(entry: rawptr) -> int {
 	a := uintptr(entry)
-	room := section_end(a) - int(a)
+	room := exe_section_end(a) - int(a)
 	i, _ := slice.binary_search(exe_starts, a + 1)
 	if i < len(exe_starts) {
 		room = min(room, int(exe_starts[i] - a))
@@ -311,34 +275,4 @@ exe_room :: proc(entry: rawptr) -> int {
 near_symbol_start :: proc(a: uintptr) -> bool {
 	i, _ := slice.binary_search(exe_starts, a - 11)
 	return i < len(exe_starts) && exe_starts[i] < a + 5
-}
-
-section_end :: proc(a: uintptr) -> int {
-	base := exe_base()
-	for &sh in pe_sections(rawptr(base)) {
-		va := base + uintptr(sh.virtual_address)
-		if a >= va && a < va + uintptr(sh.virtual_size) {
-			return int(va + uintptr(sh.virtual_size))
-		}
-	}
-	return int(a)
-}
-
-// A breakpoint is a 0xCC in memory where the file has another byte
-exe_file_byte :: proc(a: uintptr) -> (b: u8, ok: bool) {
-	if len(exe_file) == 0 {
-		return
-	}
-	rva := a - exe_base()
-	for &sh in pe_sections(raw_data(exe_file)) {
-		va := uintptr(sh.virtual_address)
-		if rva >= va && rva < va + uintptr(sh.virtual_size) {
-			off := int(sh.pointer_to_raw_data) + int(rva - va)
-			if off < len(exe_file) {
-				return exe_file[off], true
-			}
-			return
-		}
-	}
-	return
 }

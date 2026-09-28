@@ -9,12 +9,11 @@ package livepatch
 @(require) import "core:thread"
 @(require) import "core:time"
 @(require) import "base:runtime"
-@(require) import win "core:sys/windows"
 
 // Prints the time of each phase to stderr after each patch
 LIVEPATCH_TIMINGS :: #config(LIVEPATCH_TIMINGS, false)
 
-// Shows a Windows toast after each patch.
+// Shows a toast after each patch.
 LIVEPATCH_TOAST :: #config(LIVEPATCH_TOAST, false)
 
 // The object directory, in the exe directory. The watcher ignores it.
@@ -84,7 +83,7 @@ when LIVEPATCH {
 	Pending :: struct {
 		objects: []Loaded_Object,
 		merged:  Merged,
-		dll:     Patch_Dll,
+		module:  Patch_Module,
 		changed: []Type_Change,
 		d_build, d_bind, d_link, d_diff: time.Duration,
 	}
@@ -126,23 +125,23 @@ when LIVEPATCH {
 		prepare_redirects(&p.merged) or_return
 
 		t0 = time.tick_now()
-		p.dll = link_and_load(outdir, p.objects, &p.merged) or_return
+		p.module = link_and_load(outdir, p.objects, &p.merged) or_return
 		p.d_link = time.tick_since(t0)
 
 		for &r in p.merged.redirects {
-			r.body = rawptr(p.dll.symbols[canonical_data_name(r.name)] or_else 0)
+			r.body = rawptr(p.module.symbols[canonical_data_name(r.name)] or_else 0)
 			if r.body == nil {
 				return p, Unresolved_Symbol{error_text(r.name), error_text("patch DLL map")}
 			}
 		}
 		for &s in p.merged.slot_targets {
-			s.body = rawptr(p.dll.symbols[canonical_data_name(s.name)] or_else 0)
+			s.body = rawptr(p.module.symbols[canonical_data_name(s.name)] or_else 0)
 			if s.body == nil {
 				return p, Unresolved_Symbol{error_text(s.name), error_text("patch DLL map")}
 			}
 		}
 		if p.merged.has_type_table {
-			p.merged.type_table_new = rawptr(p.dll.symbols["runtime::type_table"] or_else 0)
+			p.merged.type_table_new = rawptr(p.module.symbols["runtime::type_table"] or_else 0)
 		}
 
 		// Before commit swaps runtime.type_table
@@ -164,7 +163,7 @@ when LIVEPATCH {
 
 		for name in p.merged.new_globals {
 			key := canonical_data_name(name)
-			if addr, found := p.dll.symbols[key]; found {
+			if addr, found := p.module.symbols[key]; found {
 				global_register(key, rawptr(addr))
 			}
 		}
@@ -172,37 +171,6 @@ when LIVEPATCH {
 		report_timings(p, d_commit)
 		show_toast(p.d_build + p.d_bind + p.d_link + p.d_diff + d_commit)
 		return nil
-	}
-
-	@(private = "file")
-	toast: win.NOTIFYICONDATAW
-
-	// Shows a toast
-	show_toast :: proc(total: time.Duration) {
-		when LIVEPATCH_TOAST {
-
-			op := u32(win.NIM_MODIFY)
-			if toast.hWnd == nil {
-				user32 := win.LoadLibraryW(win.L("user32.dll"))
-				create_window := (proc "system" (win.DWORD, cstring16, cstring16, win.DWORD, i32, i32, i32, i32, win.HWND, win.HMENU, win.HINSTANCE, rawptr) -> win.HWND)(win.GetProcAddress(user32, "CreateWindowExW"))
-				load_icon := (proc "system" (win.HINSTANCE, cstring16) -> win.HICON)(win.GetProcAddress(user32, "LoadIconW"))
-				if create_window == nil || load_icon == nil {
-					return
-				}
-				toast = {
-					cbSize = size_of(toast),
-					hWnd   = create_window(0, win.L("STATIC"), nil, 0, 0, 0, 0, 0, win.HWND_MESSAGE, nil, nil, nil),
-					uFlags = win.NIF_ICON | win.NIF_TIP | win.NIF_INFO,
-					hIcon  = load_icon(nil, cstring16(rawptr(win.IDI_INFORMATION))),
-				}
-				_ = win.utf8_to_utf16(toast.szTip[:len(toast.szTip) - 1], "livepatch")
-				_ = win.utf8_to_utf16(toast.szInfoTitle[:len(toast.szInfoTitle) - 1], "livepatch")
-				op = win.NIM_ADD
-			}
-			toast.szInfo = {}
-			_ = win.utf8_to_utf16(toast.szInfo[:len(toast.szInfo) - 1], fmt.tprintf("Patch applied in %.0f ms", time.duration_milliseconds(total)))
-			win.Shell_NotifyIconW(op, &toast)
-		}
 	}
 
 	initialized: bool
@@ -222,35 +190,20 @@ when LIVEPATCH {
 		if err != nil {
 			return No_Map{}
 		}
-		load_exe_map(exe)
+		load_exe_symbols(exe)
 		if len(exe_map) == 0 {
 			return No_Map{}
 		}
 		exe_file, _ = os.read_entire_file_from_path(exe, context.allocator)
 		mirror_init()
-
-		base := exe_base()
-		old: win.DWORD
-		for &sh in pe_sections(rawptr(base)) {
-			if sh.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
-				if !win.VirtualProtect(rawptr(base + uintptr(sh.virtual_address)), win.SIZE_T(sh.virtual_size), win.PAGE_EXECUTE_READWRITE, &old) {
-					return Commit_Failed{}
-				}
-			}
-		}
-		if tt, found := exe_symbol("runtime::type_table"); found {
-			if !win.VirtualProtect(tt, size_of([]rawptr), win.PAGE_READWRITE, &old) {
-				return Commit_Failed{}
-			}
-		}
-		return nil
+		return make_exe_writable()
 	}
 
 	report_timings :: proc(p: ^Pending, d_commit: time.Duration) {
 		when LIVEPATCH_TIMINGS {
 			total_syms := 0
 			for &o in p.objects {
-				total_syms += o.view.n_syms
+				total_syms += object_symbol_count(&o)
 			}
 			ms :: proc(d: time.Duration) -> f64 {
 				return time.duration_milliseconds(d)
