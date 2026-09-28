@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 find_hooks_in_exe :: proc(section: string) -> []Patch_Hook {

@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 // The exe's symbols, filled by load_exe_symbols of the platform.

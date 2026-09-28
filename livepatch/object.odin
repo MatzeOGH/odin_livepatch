@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 Symbol_Kind :: enum {
