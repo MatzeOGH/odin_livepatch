@@ -19,7 +19,6 @@ LIVEPATCH_TOAST :: #config(LIVEPATCH_TOAST, false)
 // The object directory, in the exe directory. The watcher ignores it.
 PATCH_OUTPUT_DIRNAME :: "livepatch"
 
-
 when LIVEPATCH {
 
 	// Rebuilds and applies a patch. Blocking!
@@ -190,11 +189,11 @@ when LIVEPATCH {
 		if err != nil {
 			return No_Map{}
 		}
+		exe_file, _ = os.read_entire_file_from_path(exe, context.allocator)
 		load_exe_symbols(exe)
 		if len(exe_map) == 0 {
 			return No_Map{}
 		}
-		exe_file, _ = os.read_entire_file_from_path(exe, context.allocator)
 		mirror_init()
 		return make_exe_writable()
 	}
@@ -218,6 +217,9 @@ when LIVEPATCH {
 				len(p.objects), total_syms, len(p.merged.redirects), len(p.merged.slot_targets),
 				ms(p.d_build), ms(p.d_bind), ms(p.d_link), ms(p.d_diff), ms(d_commit),
 			)
+			if n := unpaused_threads(); n > 0 {
+				fmt.eprintf("[livepatch]   %d thread(s) kept running: they block LIVEPATCH_SIGNAL\n", n)
+			}
 		}
 	}
 

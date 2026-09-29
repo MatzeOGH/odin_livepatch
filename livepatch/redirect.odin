@@ -54,7 +54,7 @@ prepare_redirects :: proc(merged: ^Merged) -> Error {
 		case .Breakpoint:
 			append(&failed, r.name)
 		case .No_Memory:
-			return Load_Failed{kind = .No_Stub_Memory}
+			return Load_Failed{kind = .No_Stub_Memory, os_error = last_alloc_error()}
 		}
 	}
 	if len(failed) > 0 {

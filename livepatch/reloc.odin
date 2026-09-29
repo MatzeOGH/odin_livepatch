@@ -34,10 +34,7 @@ rewrite_object :: proc(o: ^Loaded_Object, merged: ^Merged, allocator := context.
 				live[idx] = uintptr(a)
 			}
 		}
-		addr, found := merged.defs[name]
-		if !found {
-			continue
-		}
+		addr := merged.defs[name] or_continue
 		if sym.section_number > 0 {
 			sh := section_header(data, v.sec_off, int(sym.section_number) - 1)
 			if is_object_local(sym, name, sh) {

@@ -12,7 +12,8 @@ package livepatch_demo
 // Each DEMO_n constant below turns on one livepatch feature. To enable a feature while the
 // demo runs, set its constant to true and save. See README.md for what each one shows.
 //
-// Build the host with build_livepatch.bat, then run demo.exe.
+// Build the host with build_livepatch.bat (Windows) or build_livepatch.sh (Linux), then run
+// demo.exe or ./demo.
 
 import lp "../livepatch"
 
@@ -33,6 +34,9 @@ DEMO_3 :: false // a @static local: a frame counter that does not reset on a pat
 DEMO_4 :: false // a global that a patch adds: a wind slider
 DEMO_5 :: false // a procedure that a patch adds: a background grid
 DEMO_6 :: false // a build error: the error shows on screen, and the old code keeps running
+
+// The script that builds this demo, and that patch_start runs to rebuild it
+BUILD_SCRIPT :: "build_livepatch.bat" when ODIN_OS == .Windows else "build_livepatch.sh"
 
 WIDTH   :: 900
 HEIGHT  :: 600
@@ -128,7 +132,7 @@ main :: proc() {
 		// keeps running. (lp.patch() does the same in one call, but the window freezes
 		// for the whole build.)
 		if do_patch {
-			if _, busy := lp.patch_start("build_livepatch.bat").(lp.Patch_In_Progress); busy {
+			if _, busy := lp.patch_start(BUILD_SCRIPT).(lp.Patch_In_Progress); busy {
 				patch_again = true
 			}
 		}
@@ -136,7 +140,7 @@ main :: proc() {
 			after_patch(err)
 			if patch_again {
 				patch_again = false
-				lp.patch_start("build_livepatch.bat")
+				lp.patch_start(BUILD_SCRIPT)
 			}
 		}
 

@@ -98,6 +98,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 
 // Binds each external that no patch object defines
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
+	near_refs: Near_References
+	have_near_refs := false
 	for &o in objects {
 		cursor := 0
 		for symbol in object_symbols(&o, &cursor) {
@@ -116,12 +118,17 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 				return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
 			}
 			if !is_near(uintptr(addr)) {
-				slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
-				if slot == nil {
-					return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+				if !have_near_refs {
+					near_refs, have_near_refs = near_references(objects), true
 				}
-				write_tramp_target(slot, addr)
-				addr = slot
+				if needs_near_address(&near_refs, name) {
+					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
+					if slot == nil {
+						return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+					}
+					write_tramp_target(slot, addr)
+					addr = slot
+				}
 			}
 			merged.externals[name] = addr
 		}

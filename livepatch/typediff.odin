@@ -21,10 +21,7 @@ diff_types :: proc(old_tbl, new_tbl: []^runtime.Type_Info, allocator := context.
 		if ti == nil {
 			continue
 		}
-		named, ok := ti.variant.(runtime.Type_Info_Named)
-		if !ok {
-			continue
-		}
+		named := ti.variant.(runtime.Type_Info_Named) or_continue
 		old := old_by_name[qualified_name(named, allocator)] or_continue
 		if !types_equal(old, ti) {
 			append(&changed, Type_Change{name = named.name, old = old, new = ti})

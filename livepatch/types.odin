@@ -57,7 +57,7 @@ Unresolved_Symbol :: struct {name: string, object: string}
 
 Load_Failed :: struct {
 	kind:     Load_Error_Kind,
-	os_error: os.Error, // .Cannot_Write_File, .Cannot_Run_Linker, .Load_Library_Failed
+	os_error: os.Error, // .Cannot_Write_File, .Cannot_Run_Linker, .Load_Library_Failed, and why the memory was refused for .No_Near_Memory, .No_Stub_Memory
 	output:   string,   // .Link_Failed: the linker output
 }
 Load_Error_Kind :: enum {
@@ -72,7 +72,9 @@ Load_Error_Kind :: enum {
 }
 
 Breakpoint_In_Redirect :: struct {procedures: string}
-Commit_Failed     :: struct {}
+Commit_Failed     :: struct {
+	os_error: os.Error, // set when the exe code could not be made writable
+}
 Patch_In_Progress :: struct {}
 
 // A type whose layout changed in this patch. A post hook reads old-layout instances through

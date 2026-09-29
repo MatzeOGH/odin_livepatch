@@ -96,13 +96,13 @@ make_exe_writable :: proc() -> Error {
 	for &sh in pe_sections(rawptr(base)) {
 		if sh.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
 			if !win.VirtualProtect(rawptr(base + uintptr(sh.virtual_address)), win.SIZE_T(sh.virtual_size), win.PAGE_EXECUTE_READWRITE, &old) {
-				return Commit_Failed{}
+				return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}
 			}
 		}
 	}
 	if tt, found := exe_symbol("runtime::type_table"); found {
 		if !win.VirtualProtect(tt, size_of([]rawptr), win.PAGE_READWRITE, &old) {
-			return Commit_Failed{}
+			return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}
 		}
 	}
 	return nil
@@ -117,6 +117,11 @@ page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
 		prot = win.PAGE_EXECUTE_READWRITE
 	}
 	return win.VirtualAlloc(rawptr(addr), win.SIZE_T(size), kind, prot)
+}
+
+// Why the last allocation failed
+last_alloc_error :: proc() -> os.Error {
+	return os.Platform_Error(win.GetLastError())
 }
 
 // Frees a whole allocation from page_alloc_at
@@ -175,10 +180,7 @@ suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
 		win.SuspendThread(t)
 	}
 	for {
-		found, fits := scan_threads(&handles, &ids, grow = false)
-		if !fits {
-			return handles, false
-		}
+		found := scan_threads(&handles, &ids, grow = false) or_return
 		if !found {
 			return handles, true
 		}
@@ -234,6 +236,10 @@ ip_conflicts :: proc(handles: Suspended_Threads, regions: []Range) -> bool {
 		}
 	}
 	return false
+}
+
+unpaused_threads :: proc() -> int {
+	return 0
 }
 
 resume_all :: proc(handles: Suspended_Threads) {

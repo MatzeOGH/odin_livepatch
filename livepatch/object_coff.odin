@@ -74,6 +74,17 @@ object_symbols :: proc(o: ^Loaded_Object, cursor: ^int) -> (s: Object_Symbol, ok
 	return s, true
 }
 
+// Not relevant for windows
+Near_References :: struct {}
+
+near_references :: proc(objects: []Loaded_Object) -> Near_References {
+	return {}
+}
+
+needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
+	return true
+}
+
 // A COFF object with only absolute symbols. A symbol value holds only the low 32 bits of the address
 abs_object :: proc(merged: ^Merged) -> []byte {
 	n := len(merged.aliases) + len(merged.externals)

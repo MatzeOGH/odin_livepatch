@@ -40,7 +40,7 @@ link_and_load :: proc(outdir: string, objects: []Loaded_Object, merged: ^Merged)
 	// reserv space near exe
 	reserve := alloc_near(exe_base(), size, commit = false)
 	if reserve == nil {
-		return {}, Load_Failed{kind = .No_Near_Memory}
+		return {}, Load_Failed{kind = .No_Near_Memory, os_error = last_alloc_error()}
 	}
 	base := uintptr(reserve)
 	link_err := run_linker(objects, abs_path, stem, base)
