@@ -17,6 +17,9 @@ Slot_Target :: struct {
 	name: string,
 }
 
+// The GDB JIT interface hook (platform_linux.odin)
+JIT_REGISTER_NAME :: "__jit_debug_register_code"
+
 Merged :: struct {
 	defs:           map[string]rawptr, // defined link name -> live address that references use
 	defined:        map[string]bool,   // external names that a patch object defines
@@ -60,8 +63,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 
 			#partial switch symbol.kind {
 			case .Code:
-				// Never redirect the patcher while it runs.
-				if strings.has_prefix(name, "livepatch::") {
+				// Never redirect the patcher while it runs, Nor the JIT interface hook
+				if strings.has_prefix(name, "livepatch::") || name == JIT_REGISTER_NAME {
 					if exe_address, found := exe_symbol(name); found {
 						merged.defs[name] = exe_address
 					}
@@ -71,8 +74,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local {
 					continue
 				}
-				// A redirect needs 5 bytes for the jmp. Else the procedure gets a slot.
-				if exe_address, found := exe_symbol(name); found && exe_room(exe_address) >= 5 {
+				// A redirect needs REDIRECT_SIZE bytes for the jump
+				if exe_address, found := exe_symbol(name); found && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
 				} else if slot := slot_for(name); slot != nil {
@@ -134,11 +137,6 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 		}
 	}
 	return nil
-}
-
-is_near :: proc(addr: uintptr) -> bool {
-	LIMIT :: uintptr(0x4000_0000) // 1GB, plus NEAR_WINDOW stays under 2GB
-	return abs(int(addr) - int(exe_base())) < int(LIMIT)
 }
 
 alias_for :: proc(merged: ^Merged, name: string) -> string {

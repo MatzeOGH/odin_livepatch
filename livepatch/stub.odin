@@ -1,6 +1,6 @@
 package livepatch
 
-when !(LIVEPATCH && (ODIN_OS == .Windows || ODIN_OS == .Linux) && ODIN_ARCH == .amd64) {
+when !(LIVEPATCH && SUPPORTED_TARGET) {
 
 	Watcher :: struct {}
 

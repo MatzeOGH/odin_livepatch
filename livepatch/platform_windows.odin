@@ -108,7 +108,6 @@ make_exe_writable :: proc() -> Error {
 	return nil
 }
 
-// Allocates at `addr` exactly, or returns nil. Without `commit`, only reserves
 page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
 	kind: win.DWORD = win.MEM_RESERVE
 	prot: win.DWORD = win.PAGE_NOACCESS
@@ -129,7 +128,6 @@ page_free :: proc(p: rawptr) {
 	win.VirtualFree(p, 0, win.MEM_RELEASE)
 }
 
-// Refuses memory that it did not commit or reserve itself
 commit_at :: proc(t: uintptr, n: int) -> bool {
 	for page := t & ~uintptr(0xFFF); page < t + uintptr(n); page += 0x1000 {
 		info: win.MEMORY_BASIC_INFORMATION
@@ -313,7 +311,7 @@ run_linker :: proc(objects: []Loaded_Object, abs_path, stem: string, base: uintp
 }
 
 // Loads `<stem>.dll`, which must land at `base`, and reads its symbols from `<stem>.map`.
-load_patch_module :: proc(stem: string, base: uintptr) -> (m: Patch_Module, err: Error) {
+load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object) -> (m: Patch_Module, err: Error) {
 	dll_path := strings.concatenate({stem, ".dll"}, context.temp_allocator)
 	map_path := strings.concatenate({stem, ".map"}, context.temp_allocator)
 	h := win.LoadLibraryExW(win.utf8_to_wstring(dll_path), nil, {})

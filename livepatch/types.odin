@@ -1,12 +1,18 @@
 package livepatch
 
 import "base:runtime"
-import "core:os"
 import "core:strings"
 import "core:time"
 
 // Must be true to enable livepatching
 LIVEPATCH :: #config(LIVEPATCH, false)
+
+// The targets that livepatch patches. On any other, the API is a no-op stub.
+SUPPORTED_TARGET :: (ODIN_OS == .Windows || ODIN_OS == .Linux) && ODIN_ARCH == .amd64
+
+// The sections of the migration hooks, for `@(link_section=...)`
+HOOK_PRE_SECTION  :: "lp_pre"
+HOOK_POST_SECTION :: "lp_post"
 
 Error :: union {
 	Build_Failed,
@@ -39,7 +45,7 @@ error_delete :: proc(err: Error) {
 Build_Failed :: struct {
 	kind:      Build_Error_Kind,
 	exit_code: int,      // .Script_Failed
-	os_error:  os.Error, // .Cannot_Create_Dir, .Cannot_Run_Script
+	os_error:  Os_Error, // .Cannot_Create_Dir, .Cannot_Run_Script
 	output:    string,   // .Script_Failed: the build output
 }
 Build_Error_Kind :: enum {
@@ -57,7 +63,7 @@ Unresolved_Symbol :: struct {name: string, object: string}
 
 Load_Failed :: struct {
 	kind:     Load_Error_Kind,
-	os_error: os.Error, // .Cannot_Write_File, .Cannot_Run_Linker, .Load_Library_Failed, and why the memory was refused for .No_Near_Memory, .No_Stub_Memory
+	os_error: Os_Error, // .Cannot_Write_File, .Cannot_Run_Linker, .Load_Library_Failed, and why the memory was refused for .No_Near_Memory, .No_Stub_Memory
 	output:   string,   // .Link_Failed: the linker output
 }
 Load_Error_Kind :: enum {
@@ -73,7 +79,7 @@ Load_Error_Kind :: enum {
 
 Breakpoint_In_Redirect :: struct {procedures: string}
 Commit_Failed     :: struct {
-	os_error: os.Error, // set when the exe code could not be made writable
+	os_error: Os_Error, // set when the exe code could not be made writable
 }
 Patch_In_Progress :: struct {}
 
@@ -92,8 +98,8 @@ Watch_Error :: union {
 	Watch_Failed,
 }
 
-Watch_Start_Failed :: struct {kind: Watch_Error_Kind, os_error: os.Error}
-Watch_Failed       :: struct {kind: Watch_Error_Kind, os_error: os.Error}
+Watch_Start_Failed :: struct {kind: Watch_Error_Kind, os_error: Os_Error}
+Watch_Failed       :: struct {kind: Watch_Error_Kind, os_error: Os_Error}
 Watch_Error_Kind :: enum {
 	Empty_Path,
 	Exe_Path_Unknown,

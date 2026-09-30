@@ -64,6 +64,7 @@ ET_EXEC :: 2
 ET_DYN  :: 3
 
 EM_X86_64 :: 62
+ELF_MACHINE :: EM_X86_64
 
 SHT_PROGBITS :: 1
 SHT_SYMTAB   :: 2
@@ -136,67 +137,66 @@ Elf_View :: struct {
 	strtab:   []u8, // the names of syms
 }
 
-elf_parse :: proc(data: []byte) -> (v: Elf_View, ok: bool) {
+elf_parse :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 	if len(data) < size_of(Elf64_Ehdr) {
 		return
 	}
-	h := (^Elf64_Ehdr)(raw_data(data))
-	if string(h.ident[:4]) != "\x7fELF" || h.ident[4] != 2 || h.ident[5] != 1 || h.machine != EM_X86_64 {
-		return // not ELF64, little endian, x86-64
+	header := (^Elf64_Ehdr)(raw_data(data))
+	if string(header.ident[:4]) != "\x7fELF" || header.ident[4] != 2 || header.ident[5] != 1 || header.machine != ELF_MACHINE {
+		return // not ELF64, little endian, for this CPU
 	}
-	v.header = h
-	if h.shnum == 0 || int(h.shentsize) != size_of(Elf64_Shdr) || h.shstrndx == SHN_XINDEX {
+	view.header = header
+	if header.shnum == 0 || int(header.shentsize) != size_of(Elf64_Shdr) || header.shstrndx == SHN_XINDEX {
 		return
 	}
-	shoff := int(h.shoff)
-	if shoff <= 0 || shoff + int(h.shnum) * size_of(Elf64_Shdr) > len(data) {
+	section_headers_offset := int(header.shoff)
+	if section_headers_offset <= 0 || section_headers_offset + int(header.shnum) * size_of(Elf64_Shdr) > len(data) {
 		return
 	}
-	v.sections = ([^]Elf64_Shdr)(raw_data(data[shoff:]))[:h.shnum]
-	if h.phnum > 0 {
-		phoff := int(h.phoff)
-		if int(h.phentsize) != size_of(Elf64_Phdr) || phoff + int(h.phnum) * size_of(Elf64_Phdr) > len(data) {
+	view.sections = ([^]Elf64_Shdr)(raw_data(data[section_headers_offset:]))[:header.shnum]
+	if header.phnum > 0 {
+		program_headers_offset := int(header.phoff)
+		if int(header.phentsize) != size_of(Elf64_Phdr) || program_headers_offset + int(header.phnum) * size_of(Elf64_Phdr) > len(data) {
 			return
 		}
-		v.segments = ([^]Elf64_Phdr)(raw_data(data[phoff:]))[:h.phnum]
+		view.segments = ([^]Elf64_Phdr)(raw_data(data[program_headers_offset:]))[:header.phnum]
 	}
-	v.shstrtab = elf_section_bytes(data, &v.sections[h.shstrndx]) or_return
-	for &sh, i in v.sections {
-		if sh.type == SHT_SYMTAB {
-			if int(sh.link) >= len(v.sections) || sh.entsize != size_of(Elf64_Sym) {
+	view.shstrtab = elf_section_bytes(data, &view.sections[header.shstrndx]) or_return
+	for &section, section_index in view.sections {
+		if section.type == SHT_SYMTAB {
+			if int(section.link) >= len(view.sections) || section.entsize != size_of(Elf64_Sym) {
 				return
 			}
-			bytes := elf_section_bytes(data, &sh) or_return
-			v.symtab = i
-			v.syms = ([^]Elf64_Sym)(raw_data(bytes))[:len(bytes) / size_of(Elf64_Sym)]
-			v.strtab = elf_section_bytes(data, &v.sections[sh.link]) or_return
+			symtab_bytes := elf_section_bytes(data, &section) or_return
+			view.symtab = section_index
+			view.syms = ([^]Elf64_Sym)(raw_data(symtab_bytes))[:len(symtab_bytes) / size_of(Elf64_Sym)]
+			view.strtab = elf_section_bytes(data, &view.sections[section.link]) or_return
 			break
 		}
 	}
-	return v, true
+	return view, true
 }
 
-// The file bytes of a section
-elf_section_bytes :: proc "contextless" (data: []byte, sh: ^Elf64_Shdr) -> (bytes: []byte, ok: bool) {
-	if sh.type == SHT_NOBITS {
+elf_section_bytes :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> (bytes: []byte, ok: bool) {
+	if section.type == SHT_NOBITS {
 		return {}, true
 	}
-	start, size := int(sh.offset), int(sh.size)
+	start, size := int(section.offset), int(section.size)
 	if start < 0 || size < 0 || start + size > len(data) {
 		return
 	}
 	return data[start:][:size], true
 }
 
-elf_string :: proc "contextless" (table: []u8, off: u32) -> string {
-	if int(off) >= len(table) {
+elf_string :: proc "contextless" (table: []u8, offset: u32) -> string {
+	if int(offset) >= len(table) {
 		return ""
 	}
-	return strings.truncate_to_byte(string(table[off:]), 0)
+	return strings.truncate_to_byte(string(table[offset:]), 0)
 }
 
-elf_section_name :: proc "contextless" (view: ^Elf_View, sh: ^Elf64_Shdr) -> string {
-	return elf_string(view.shstrtab, sh.name)
+elf_section_name :: proc "contextless" (view: ^Elf_View, section: ^Elf64_Shdr) -> string {
+	return elf_string(view.shstrtab, section.name)
 }
 
 elf_symbol_name :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> string {
@@ -204,7 +204,7 @@ elf_symbol_name :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> stri
 }
 
 // The index of the section that defines sym. Not ok for undefined, absolute and common symbols
-elf_symbol_section :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> (index: int, ok: bool) {
+elf_symbol_section :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> (section_index: int, ok: bool) {
 	if sym.shndx == SHN_UNDEF || sym.shndx >= 0xFF00 || int(sym.shndx) >= len(view.sections) {
 		return
 	}
@@ -222,26 +222,30 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 	out.starts = make([dynamic]uintptr, allocator)
 	out.tls = make(map[string]uintptr, allocator)
 	for &sym in view.syms {
-		_ = elf_symbol_section(view, &sym) or_continue
-		type := elf_st_type(sym.info)
-		if type == STT_SECTION || type == STT_FILE {
+		section_index := elf_symbol_section(view, &sym) or_continue
+		if view.sections[section_index].flags & SHF_ALLOC == 0 {
+			// Not in memory
+			continue
+		}
+		sym_type := elf_st_type(sym.info)
+		if sym_type == STT_SECTION || sym_type == STT_FILE {
 			continue
 		}
 		name := elf_symbol_name(view, &sym)
 		if name == "" {
 			continue
 		}
-		key := canonical_data_name(name)
-		if type == STT_TLS {
-			if key not_in out.tls {
-				out.tls[strings.clone(key, allocator)] = uintptr(sym.value)
+		canonical := canonical_data_name(name)
+		if sym_type == STT_TLS {
+			if canonical not_in out.tls {
+				out.tls[strings.clone(canonical, allocator)] = uintptr(sym.value)
 			}
 			continue
 		}
-		live := bias + uintptr(sym.value)
-		append(&out.starts, live)
-		if key not_in out.symbols {
-			out.symbols[strings.clone(key, allocator)] = live
+		live_address := bias + uintptr(sym.value)
+		append(&out.starts, live_address)
+		if canonical not_in out.symbols {
+			out.symbols[strings.clone(canonical, allocator)] = live_address
 		}
 	}
 	return

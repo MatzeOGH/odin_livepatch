@@ -38,7 +38,7 @@ link_and_load :: proc(outdir: string, objects: []Loaded_Object, merged: ^Merged)
 	}
 
 	// reserv space near exe
-	reserve := alloc_near(exe_base(), size, commit = false)
+	reserve := alloc_near(size, commit = false)
 	if reserve == nil {
 		return {}, Load_Failed{kind = .No_Near_Memory, os_error = last_alloc_error()}
 	}
@@ -48,7 +48,7 @@ link_and_load :: proc(outdir: string, objects: []Loaded_Object, merged: ^Merged)
 	if link_err != nil {
 		return {}, link_err
 	}
-	return load_patch_module(stem, base)
+	return load_patch_module(stem, base, objects)
 }
 
 // delete old artifacts

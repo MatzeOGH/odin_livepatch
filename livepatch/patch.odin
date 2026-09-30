@@ -16,10 +16,12 @@ Range :: struct {
 // Returns false with no change if it finds no safe moment to write.
 commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []Type_Change) -> (ok: bool) {
 	regions := make([dynamic]Range, 0, len(merged.redirects), context.temp_allocator)
+	unwritten := make([dynamic]Redirect_Site, 0, len(merged.redirects), context.temp_allocator)
 	for r in merged.redirects {
 		s := sites[r.exe_address] or_return
 		if !s.written {
-			append(&regions, Range{uintptr(s.site), uintptr(s.site) + 5})
+			append(&regions, Range{uintptr(s.site), uintptr(s.site) + REDIRECT_SIZE})
+			append(&unwritten, s)
 		}
 	}
 
@@ -48,14 +50,9 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	fire_hooks(pre_hooks, changed)
 
 	for r in merged.redirects {
-		// The trampoline first, so a new site never reaches an old target.
-		s := sites[r.exe_address]
-		write_tramp_target(s.tramp, r.body)
-		if !s.written {
-			write_site_bytes(s)
-			flush_icache(s.site, 5)
-		}
+		write_tramp_target(sites[r.exe_address].tramp, r.body)
 	}
+	write_sites(unwritten[:])
 	for s in merged.slot_targets {
 		write_tramp_target(s.slot, s.body)
 	}

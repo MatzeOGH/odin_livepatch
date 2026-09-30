@@ -12,14 +12,13 @@ when LIVEPATCH {
 	Watcher :: struct {
 		fd:            linux.Fd,
 		source_root:   string,
-		directories:   map[linux.Wd]string,
+		directories:   map[linux.Wd]string, // watch -> its directory
 		buffer:        [64 * 1024]u8,
 		pending:       bool,
 		pending_since: time.Tick,
 		active:        bool,
 	}
 
-	@(private = "file")
 	WATCH_MASK :: linux.Inotify_Event_Mask{.MODIFY, .CLOSE_WRITE, .MOVED_FROM, .MOVED_TO, .CREATE, .DELETE, .ONLYDIR}
 
 	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
@@ -83,7 +82,6 @@ when LIVEPATCH {
 		watcher^ = {}
 	}
 
-	// Watches `dir` and every directory below it
 	watch_add_tree :: proc(watcher: ^Watcher, dir: string) -> linux.Errno {
 		cdir := strings.clone_to_cstring(dir, context.temp_allocator)
 		wd, err := linux.inotify_add_watch(watcher.fd, cdir, WATCH_MASK)
@@ -91,14 +89,14 @@ when LIVEPATCH {
 			return err
 		}
 		if old, found := watcher.directories[wd]; found {
-			delete(old, context.allocator)
+			delete(old, context.allocator) // the same directory, seen again
 		}
 		watcher.directories[wd] = strings.clone(dir, context.allocator)
 
 		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
 		for e in entries {
 			if e.type == .Directory {
-				_ = watch_add_tree(watcher, e.fullpath)
+				_ = watch_add_tree(watcher, e.fullpath) // a directory that went away meanwhile
 			}
 		}
 		return .NONE
@@ -125,7 +123,7 @@ when LIVEPATCH {
 					delete_key(&watcher.directories, event.wd)
 				}
 			case .ISDIR in event.mask:
-				// A new directory
+				// A new directory: watch it. Its sources count on their next change.
 				if event.mask & {.CREATE, .MOVED_TO} != {} {
 					if parent, found := watcher.directories[event.wd]; found {
 						path, _ := filepath.join({parent, name}, context.temp_allocator)
