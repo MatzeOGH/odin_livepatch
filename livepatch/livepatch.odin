@@ -32,8 +32,8 @@ when LIVEPATCH {
 		}
 		defer virtual.arena_destroy(&arena)
 		context.temp_allocator = virtual.arena_allocator(&arena)
-		p := prepare(build_script) or_return
-		return apply(&p)
+		pending := prepare(build_script) or_return
+		return apply(&pending)
 	}
 
 	// Builds a patch on a worker thread
@@ -84,91 +84,91 @@ when LIVEPATCH {
 		merged:  Merged,
 		module:  Patch_Module,
 		changed: []Type_Change,
-		d_build, d_bind, d_link, d_diff: time.Duration,
+		build_time, bind_time, link_time, diff_time: time.Duration,
 	}
 
-	prepare :: proc(build_script: string) -> (p: Pending, err: Error) {
+	prepare :: proc(build_script: string) -> (pending: Pending, err: Error) {
 		context.allocator = runtime.heap_allocator()
 		init() or_return
 
-		outdir := build_output_dir() or_return
+		output_dir := build_output_dir() or_return
 
-		t0 := time.tick_now()
+		phase_start := time.tick_now()
 		build_start := time.now()
-		run_build(build_script, outdir) or_return
-		p.d_build = time.tick_since(t0)
+		run_build(build_script, output_dir) or_return
+		pending.build_time = time.tick_since(phase_start)
 
-		t0 = time.tick_now()
-		ok: bool
-		p.objects, ok = read_all(outdir, build_start)
-		if !ok || len(p.objects) == 0 {
-			return p, No_Objects_Mapped{}
+		phase_start = time.tick_now()
+		read_ok: bool
+		pending.objects, read_ok = read_all(output_dir, build_start)
+		if !read_ok || len(pending.objects) == 0 {
+			return pending, No_Objects_Mapped{}
 		}
-		if len(p.objects) < 2 {
-			return p, Too_Few_Objects{len(p.objects)}
+		if len(pending.objects) < 2 {
+			return pending, Too_Few_Objects{len(pending.objects)}
 		}
 
-		p.merged = merge_symbols(p.objects)
-		resolve_externals(p.objects, &p.merged) or_return
-		for &o in p.objects {
-			out, failed := rewrite_object(&o, &p.merged)
+		pending.merged = merge_symbols(pending.objects)
+		resolve_externals(pending.objects, &pending.merged) or_return
+		for &object in pending.objects {
+			out, failed := retarget_object_references(&object, &pending.merged)
 			if failed != "" {
-				return p, Unresolved_Symbol{error_text(failed), error_text(o.path)}
+				return pending, Unresolved_Symbol{error_text(failed), error_text(object.path)}
 			}
-			if os.write_entire_file(o.path, out) != nil {
-				return p, No_Objects_Mapped{}
-			}
-		}
-		p.d_bind = time.tick_since(t0)
-
-		prepare_redirects(&p.merged) or_return
-
-		t0 = time.tick_now()
-		p.module = link_and_load(outdir, p.objects, &p.merged) or_return
-		p.d_link = time.tick_since(t0)
-
-		for &r in p.merged.redirects {
-			r.body = rawptr(p.module.symbols[canonical_data_name(r.name)] or_else 0)
-			if r.body == nil {
-				return p, Unresolved_Symbol{error_text(r.name), error_text("patch DLL map")}
+			if os.write_entire_file(object.path, out) != nil {
+				return pending, No_Objects_Mapped{}
 			}
 		}
-		for &s in p.merged.slot_targets {
-			s.body = rawptr(p.module.symbols[canonical_data_name(s.name)] or_else 0)
-			if s.body == nil {
-				return p, Unresolved_Symbol{error_text(s.name), error_text("patch DLL map")}
+		pending.bind_time = time.tick_since(phase_start)
+
+		prepare_redirects(&pending.merged) or_return
+
+		phase_start = time.tick_now()
+		pending.module = link_and_load(output_dir, pending.objects, &pending.merged) or_return
+		pending.link_time = time.tick_since(phase_start)
+
+		for &redirect in pending.merged.redirects {
+			redirect.body = rawptr(pending.module.symbols[canonical_data_name(redirect.name)] or_else 0)
+			if redirect.body == nil {
+				return pending, Unresolved_Symbol{error_text(redirect.name), error_text("patch DLL map")}
 			}
 		}
-		if p.merged.has_type_table {
-			p.merged.type_table_new = rawptr(p.module.symbols["runtime::type_table"] or_else 0)
+		for &slot_target in pending.merged.slot_targets {
+			slot_target.body = rawptr(pending.module.symbols[canonical_data_name(slot_target.name)] or_else 0)
+			if slot_target.body == nil {
+				return pending, Unresolved_Symbol{error_text(slot_target.name), error_text("patch DLL map")}
+			}
+		}
+		if pending.merged.has_type_table {
+			pending.merged.type_table_new = rawptr(pending.module.symbols["runtime::type_table"] or_else 0)
 		}
 
 		// Before commit swaps runtime.type_table
-		t0 = time.tick_now()
-		if p.merged.type_table_new != nil {
-			p.changed = diff_types(runtime.type_table, (^[]^runtime.Type_Info)(p.merged.type_table_new)^)
+		phase_start = time.tick_now()
+		if pending.merged.type_table_new != nil {
+			pending.changed = diff_types(runtime.type_table, (^[]^runtime.Type_Info)(pending.merged.type_table_new)^)
 		}
-		p.d_diff = time.tick_since(t0)
-		return p, nil
+		pending.diff_time = time.tick_since(phase_start)
+		return pending, nil
 	}
 
-	apply :: proc(p: ^Pending) -> Error {
+	apply :: proc(pending: ^Pending) -> Error {
 		context.allocator = runtime.heap_allocator()
-		t0 := time.tick_now()
-		if !commit(&p.merged, find_hooks_in_exe("lp_pre"), find_hooks_in_exe("lp_post"), p.changed) {
+		phase_start := time.tick_now()
+		if !commit(&pending.merged, find_hooks_in_exe("lp_pre"), find_hooks_in_exe("lp_post"), pending.changed) {
 			return Commit_Failed{}
 		}
-		d_commit := time.tick_since(t0)
+		commit_time := time.tick_since(phase_start)
 
-		for name in p.merged.new_globals {
+		for name in pending.merged.new_globals {
 			key := canonical_data_name(name)
-			if addr, found := p.module.symbols[key]; found {
+			if addr, found := pending.module.symbols[key]; found {
 				global_register(key, rawptr(addr))
 			}
 		}
 
-		report_timings(p, d_commit)
-		show_toast(p.d_build + p.d_bind + p.d_link + p.d_diff + d_commit)
+		report_timings(pending, commit_time)
+		show_toast(pending.build_time + pending.bind_time + pending.link_time + pending.diff_time + commit_time)
 		return nil
 	}
 
@@ -185,12 +185,12 @@ when LIVEPATCH {
 	}
 
 	init_once :: proc() -> Error {
-		exe, err := os.get_executable_path(context.allocator)
-		if err != nil {
+		exe_path, path_err := os.get_executable_path(context.allocator)
+		if path_err != nil {
 			return No_Map{}
 		}
-		exe_file, _ = os.read_entire_file_from_path(exe, context.allocator)
-		load_exe_symbols(exe)
+		exe_file, _ = os.read_entire_file_from_path(exe_path, context.allocator)
+		load_exe_symbols(exe_path)
 		if len(exe_map) == 0 {
 			return No_Map{}
 		}
@@ -198,14 +198,14 @@ when LIVEPATCH {
 		return make_exe_writable()
 	}
 
-	report_timings :: proc(p: ^Pending, d_commit: time.Duration) {
+	report_timings :: proc(pending: ^Pending, commit_time: time.Duration) {
 		when LIVEPATCH_TIMINGS {
-			total_syms := 0
-			for &o in p.objects {
-				total_syms += object_symbol_count(&o)
+			total_symbols := 0
+			for &object in pending.objects {
+				total_symbols += object_symbol_count(&object)
 			}
-			ms :: proc(d: time.Duration) -> f64 {
-				return time.duration_milliseconds(d)
+			ms :: proc(duration: time.Duration) -> f64 {
+				return time.duration_milliseconds(duration)
 			}
 			fmt.eprintf(
 				"[livepatch] objects=%d symbols=%d redirects=%d slots=%d\n" +
@@ -214,11 +214,11 @@ when LIVEPATCH {
 				"[livepatch]   link     %.1f ms  (link + load)\n" +
 				"[livepatch]   diff     %.1f ms\n" +
 				"[livepatch]   commit   %.1f ms\n",
-				len(p.objects), total_syms, len(p.merged.redirects), len(p.merged.slot_targets),
-				ms(p.d_build), ms(p.d_bind), ms(p.d_link), ms(p.d_diff), ms(d_commit),
+				len(pending.objects), total_symbols, len(pending.merged.redirects), len(pending.merged.slot_targets),
+				ms(pending.build_time), ms(pending.bind_time), ms(pending.link_time), ms(pending.diff_time), ms(commit_time),
 			)
-			if n := unpaused_threads(); n > 0 {
-				fmt.eprintf("[livepatch]   %d thread(s) kept running: they block LIVEPATCH_SIGNAL\n", n)
+			if unpaused := unpaused_threads(); unpaused > 0 {
+				fmt.eprintf("[livepatch]   %d thread(s) kept running: they block LIVEPATCH_SIGNAL\n", unpaused)
 			}
 		}
 	}

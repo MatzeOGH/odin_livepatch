@@ -10,7 +10,10 @@ if not defined ODIN set ODIN=odin
 
 set PKG=%~dp0
 set EXE=%~dp0demo.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true
+rem patch() sets LIVEPATCH_DEBUGGER=0 when no debugger is attached. Then the patch needs no debug info.
+set DEBUG=-debug
+if "%LIVEPATCH_DEBUGGER%"=="0" set DEBUG=
+set FLAGS=%DEBUG% -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true
 rem /MAP lists the @static and file-private globals the PDB drops, so patch() can preserve
 rem their state. The obj build links nothing and ignores it.
 set LINK=/OPT:NOREF /OPT:NOICF /MAP:%EXE:.exe=.map%

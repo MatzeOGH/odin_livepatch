@@ -120,12 +120,13 @@ R_X86_64_PC64          :: 24
 R_X86_64_GOTPCRELX     :: 41
 R_X86_64_REX_GOTPCRELX :: 42
 
-elf_st_bind :: #force_inline proc "contextless" (info: u8) -> u8 { return info >> 4 }
-elf_st_type :: #force_inline proc "contextless" (info: u8) -> u8 { return info & 0xF }
-elf_st_info :: #force_inline proc "contextless" (bind, type: u8) -> u8 { return bind << 4 | type & 0xF }
-elf_r_sym   :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info >> 32) }
-elf_r_type  :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info) }
-elf_r_info  :: #force_inline proc "contextless" (sym, type: u32) -> u64 { return u64(sym) << 32 | u64(type) }
+// ELF64_ST_BIND, ELF64_ST_TYPE, ELF64_ST_INFO, ELF64_R_SYM, ELF64_R_TYPE and ELF64_R_INFO of the spec
+elf_symbol_binding    :: #force_inline proc "contextless" (info: u8) -> u8 { return info >> 4 }
+elf_symbol_type       :: #force_inline proc "contextless" (info: u8) -> u8 { return info & 0xF }
+elf_symbol_info       :: #force_inline proc "contextless" (bind, type: u8) -> u8 { return bind << 4 | type & 0xF }
+elf_rela_symbol_index :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info >> 32) }
+elf_rela_type         :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info) }
+elf_rela_info         :: #force_inline proc "contextless" (sym, type: u32) -> u64 { return u64(sym) << 32 | u64(type) }
 
 Elf_View :: struct {
 	header:   ^Elf64_Ehdr,
@@ -137,7 +138,7 @@ Elf_View :: struct {
 	strtab:   []u8, // the names of syms
 }
 
-elf_parse :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
+parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 	if len(data) < size_of(Elf64_Ehdr) {
 		return
 	}
@@ -188,7 +189,16 @@ elf_section_bytes :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> 
 	return data[start:][:size], true
 }
 
-elf_string :: proc "contextless" (table: []u8, offset: u32) -> string {
+// The relocations of an SHT_RELA section
+elf_section_relas :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> (relas: []Elf64_Rela, ok: bool) {
+	bytes := elf_section_bytes(data, section) or_return
+	if len(bytes) % size_of(Elf64_Rela) != 0 {
+		return
+	}
+	return ([^]Elf64_Rela)(raw_data(bytes))[:len(bytes) / size_of(Elf64_Rela)], true
+}
+
+elf_string_at :: proc "contextless" (table: []u8, offset: u32) -> string {
 	if int(offset) >= len(table) {
 		return ""
 	}
@@ -196,15 +206,15 @@ elf_string :: proc "contextless" (table: []u8, offset: u32) -> string {
 }
 
 elf_section_name :: proc "contextless" (view: ^Elf_View, section: ^Elf64_Shdr) -> string {
-	return elf_string(view.shstrtab, section.name)
+	return elf_string_at(view.shstrtab, section.name)
 }
 
 elf_symbol_name :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> string {
-	return elf_string(view.strtab, sym.name)
+	return elf_string_at(view.strtab, sym.name)
 }
 
 // The index of the section that defines sym. Not ok for undefined, absolute and common symbols
-elf_symbol_section :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> (section_index: int, ok: bool) {
+elf_symbol_section_index :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> (section_index: int, ok: bool) {
 	if sym.shndx == SHN_UNDEF || sym.shndx >= 0xFF00 || int(sym.shndx) >= len(view.sections) {
 		return
 	}
@@ -222,12 +232,12 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 	out.starts = make([dynamic]uintptr, allocator)
 	out.tls = make(map[string]uintptr, allocator)
 	for &sym in view.syms {
-		section_index := elf_symbol_section(view, &sym) or_continue
+		section_index := elf_symbol_section_index(view, &sym) or_continue
 		if view.sections[section_index].flags & SHF_ALLOC == 0 {
 			// Not in memory
 			continue
 		}
-		sym_type := elf_st_type(sym.info)
+		sym_type := elf_symbol_type(sym.info)
 		if sym_type == STT_SECTION || sym_type == STT_FILE {
 			continue
 		}

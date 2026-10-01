@@ -11,3 +11,10 @@ examples/livepatch/
 livepatch_mod/
 *.map
 *.rdi
+
+# The test apps and their patch output
+tests/*/app
+tests/*/livepatch/
+tests/run.log
+tests/*/lldb.log
+tests/*/gdb.log

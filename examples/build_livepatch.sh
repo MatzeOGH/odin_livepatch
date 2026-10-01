@@ -11,6 +11,7 @@ ODIN=${ODIN:-odin}
 DIR=$(cd "$(dirname "$0")" && pwd)
 PKG=$DIR
 EXE=$DIR/demo
+
 FLAGS="-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true"
 
 if [ -z "$1" ]; then

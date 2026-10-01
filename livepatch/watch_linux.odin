@@ -36,9 +36,9 @@ when LIVEPATCH {
 			directories = make(map[linux.Wd]string, context.allocator),
 			active      = true,
 		}
-		if werr := watch_add_tree(&watcher, root); werr != .NONE {
+		if write_err := watch_add_tree(&watcher, root); write_err != .NONE {
 			watch_stop(&watcher)
-			return {}, Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(werr)}
+			return {}, Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(write_err)}
 		}
 		return watcher, nil
 	}
@@ -49,14 +49,14 @@ when LIVEPATCH {
 		}
 
 		for {
-			n, rerr := linux.read(watcher.fd, watcher.buffer[:])
-			if rerr == .EAGAIN {
+			bytes_read, read_err := linux.read(watcher.fd, watcher.buffer[:])
+			if read_err == .EAGAIN {
 				break
 			}
-			if rerr != .NONE {
-				return false, Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(rerr)}
+			if read_err != .NONE {
+				return false, Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(read_err)}
 			}
-			if watch_buffer_affects_sources(watcher, n) {
+			if watch_buffer_affects_sources(watcher, bytes_read) {
 				watcher.pending = true
 				watcher.pending_since = time.tick_now()
 			}
@@ -94,9 +94,9 @@ when LIVEPATCH {
 		watcher.directories[wd] = strings.clone(dir, context.allocator)
 
 		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
-		for e in entries {
-			if e.type == .Directory {
-				_ = watch_add_tree(watcher, e.fullpath) // a directory that went away meanwhile
+		for entry in entries {
+			if entry.type == .Directory {
+				_ = watch_add_tree(watcher, entry.fullpath) // a directory that went away meanwhile
 			}
 		}
 		return .NONE

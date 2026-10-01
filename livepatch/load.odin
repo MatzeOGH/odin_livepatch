@@ -21,8 +21,8 @@ read_all :: proc(dir: string, since: time.Time, allocator := context.temp_alloca
 		if read_err != nil {
 			return
 		}
-		o := object_parse(path, data) or_return
-		append(&loaded, o)
+		object := parse_object(path, data) or_return
+		append(&loaded, object)
 	}
 	return loaded[:], true
 }

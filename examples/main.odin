@@ -357,7 +357,7 @@ load_image_texture :: proc(png_bytes: []u8) -> rl.Texture2D {
 // A post-patch hook. livepatch finds it by the link section (no registration call) and
 // runs it right after each patch is applied, while the other threads are paused. The hook
 // runs the new code, so it sees the new image bytes and the new State type.
-@(link_section = "lp_post", export)
+@(link_section = lp.HOOK_POST_SECTION, export)
 _on_patched := proc(changed: []lp.Type_Change) {
 	// `changed` lists only the types in the type table, and a type is in the table only
 	// when the program uses its type info. This line puts State (and Ball) in the table.

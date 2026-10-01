@@ -6,7 +6,7 @@ exe_map:    map[string]uintptr // canonical name -> live address
 exe_starts: []uintptr          // sorted live address of every exe symbol
 exe_file:   []byte             // the exe file on disk
 
-exe_symbol :: proc(name: string) -> (addr: rawptr, ok: bool) {
-	a, found := exe_map[canonical_data_name(name)]
-	return rawptr(a), found
+exe_symbol_address :: proc(name: string) -> (addr: rawptr, ok: bool) {
+	live, found := exe_map[canonical_data_name(name)]
+	return rawptr(live), found
 }

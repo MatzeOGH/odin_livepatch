@@ -42,9 +42,9 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.new_globals = make([dynamic]string, allocator)
 	seen := make(map[string]bool, allocator)
 
-	for &o in objects {
+	for &object in objects {
 		cursor := 0
-		for symbol in object_symbols(&o, &cursor) {
+		for symbol in next_object_symbol(&object, &cursor) {
 			name := symbol.name
 			if symbol.provides {
 				merged.defined[name] = true
@@ -65,7 +65,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 			case .Code:
 				// Never redirect the patcher while it runs, Nor the JIT interface hook
 				if strings.has_prefix(name, "livepatch::") || name == JIT_REGISTER_NAME {
-					if exe_address, found := exe_symbol(name); found {
+					if exe_address, found := exe_symbol_address(name); found {
 						merged.defs[name] = exe_address
 					}
 					continue
@@ -75,7 +75,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 					continue
 				}
 				// A redirect needs REDIRECT_SIZE bytes for the jump
-				if exe_address, found := exe_symbol(name); found && exe_room(exe_address) >= REDIRECT_SIZE {
+				if exe_address, found := exe_symbol_address(name); found && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
 				} else if slot := slot_for(name); slot != nil {
@@ -86,10 +86,10 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local && !strings.contains(name, "::") {
 					continue
 				}
-				if exe_address, found := exe_symbol(name); found {
+				if exe_address, found := exe_symbol_address(name); found {
 					merged.defs[name] = exe_address
-				} else if live, ok := global_store[canonical_data_name(name)]; ok {
-					merged.defs[name] = live
+				} else if stored, in_store := global_store[canonical_data_name(name)]; in_store {
+					merged.defs[name] = stored
 				} else {
 					append(&merged.new_globals, name)
 				}
@@ -103,9 +103,9 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	near_refs: Near_References
 	have_near_refs := false
-	for &o in objects {
+	for &object in objects {
 		cursor := 0
-		for symbol in object_symbols(&o, &cursor) {
+		for symbol in next_object_symbol(&object, &cursor) {
 			if symbol.kind != .Undefined {
 				continue
 			}
@@ -113,21 +113,21 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 			if name in merged.defs || name in merged.defined || name in merged.externals {
 				continue
 			}
-			addr, found := exe_symbol(name)
+			addr, found := exe_symbol_address(name)
 			if !found {
 				addr, found = loaded_export(name)
 			}
 			if !found {
-				return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+				return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 			}
 			if !is_near(uintptr(addr)) {
 				if !have_near_refs {
-					near_refs, have_near_refs = near_references(objects), true
+					near_refs, have_near_refs = find_near_references(objects), true
 				}
 				if needs_near_address(&near_refs, name) {
 					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
 					if slot == nil {
-						return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+						return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 					}
 					write_tramp_target(slot, addr)
 					addr = slot
@@ -140,10 +140,10 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 }
 
 alias_for :: proc(merged: ^Merged, name: string) -> string {
-	if a, ok := merged.aliases[name]; ok {
-		return a
+	if alias, found := merged.aliases[name]; found {
+		return alias
 	}
-	a := fmt.tprintf("lp$%d", len(merged.aliases))
-	merged.aliases[name] = a
-	return a
+	alias := fmt.tprintf("lp$%d", len(merged.aliases))
+	merged.aliases[name] = alias
+	return alias
 }

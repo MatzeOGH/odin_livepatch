@@ -17,27 +17,27 @@ Range :: struct {
 commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []Type_Change) -> (ok: bool) {
 	regions := make([dynamic]Range, 0, len(merged.redirects), context.temp_allocator)
 	unwritten := make([dynamic]Redirect_Site, 0, len(merged.redirects), context.temp_allocator)
-	for r in merged.redirects {
-		s := sites[r.exe_address] or_return
-		if !s.written {
-			append(&regions, Range{uintptr(s.site), uintptr(s.site) + REDIRECT_SIZE})
-			append(&unwritten, s)
+	for redirect in merged.redirects {
+		redirect_site := sites[redirect.exe_address] or_return
+		if !redirect_site.written {
+			append(&regions, Range{uintptr(redirect_site.site), uintptr(redirect_site.site) + REDIRECT_SIZE})
+			append(&unwritten, redirect_site)
 		}
 	}
 
-	tt_exe: ^[]^runtime.Type_Info
+	exe_type_table: ^[]^runtime.Type_Info
 	if merged.type_table_new != nil {
-		if addr, found := exe_symbol("runtime::type_table"); found {
-			tt_exe = (^[]^runtime.Type_Info)(addr)
+		if addr, found := exe_symbol_address("runtime::type_table"); found {
+			exe_type_table = (^[]^runtime.Type_Info)(addr)
 		}
 	}
 
 	handles: Suspended_Threads
 	suspended := false
 	for _ in 0 ..< MAX_ATTEMPTS {
-		all: bool
-		handles, all = suspend_others()
-		if all && !ip_conflicts(handles, regions[:]) {
+		all_stopped: bool
+		handles, all_stopped = suspend_others()
+		if all_stopped && !ip_conflicts(handles, regions[:]) {
 			suspended = true
 			break
 		}
@@ -49,23 +49,23 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	}
 	fire_hooks(pre_hooks, changed)
 
-	for r in merged.redirects {
-		write_tramp_target(sites[r.exe_address].tramp, r.body)
+	for redirect in merged.redirects {
+		write_tramp_target(sites[redirect.exe_address].tramp, redirect.body)
 	}
 	write_sites(unwritten[:])
-	for s in merged.slot_targets {
-		write_tramp_target(s.slot, s.body)
+	for slot_target in merged.slot_targets {
+		write_tramp_target(slot_target.slot, slot_target.body)
 	}
 	// Old exe code then also sees the new types
-	if tt_exe != nil {
-		tt_exe^ = (^[]^runtime.Type_Info)(merged.type_table_new)^
+	if exe_type_table != nil {
+		exe_type_table^ = (^[]^runtime.Type_Info)(merged.type_table_new)^
 	}
 	fire_hooks(post_hooks, changed)
 	resume_all(handles)
 
-	for r in merged.redirects {
-		if s, found := &sites[r.exe_address]; found {
-			s.written = true
+	for redirect in merged.redirects {
+		if redirect_site, found := &sites[redirect.exe_address]; found {
+			redirect_site.written = true
 		}
 	}
 	return true

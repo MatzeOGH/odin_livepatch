@@ -26,19 +26,19 @@ Error :: union {
 	Patch_In_Progress,      // patch_poll has not finished the patch from patch_start
 }
 
-// Copies s to the heap, so error_delete can free it.
-error_text :: proc(s: string) -> string {
-	return strings.clone(s, runtime.heap_allocator())
+// Copies text to the heap, so error_delete can free it.
+error_text :: proc(text: string) -> string {
+	return strings.clone(text, runtime.heap_allocator())
 }
 
 // Frees the strings of an Error. It is safe to call on any Error, and on nil.
 error_delete :: proc(err: Error) {
-	h := runtime.heap_allocator()
-	#partial switch e in err {
-	case Build_Failed:           delete(e.output, h)
-	case Load_Failed:            delete(e.output, h)
-	case Unresolved_Symbol:      delete(e.name, h); delete(e.object, h)
-	case Breakpoint_In_Redirect: delete(e.procedures, h)
+	heap := runtime.heap_allocator()
+	#partial switch variant in err {
+	case Build_Failed:           delete(variant.output, heap)
+	case Load_Failed:            delete(variant.output, heap)
+	case Unresolved_Symbol:      delete(variant.name, heap); delete(variant.object, heap)
+	case Breakpoint_In_Redirect: delete(variant.procedures, heap)
 	}
 }
 
