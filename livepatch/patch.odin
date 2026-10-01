@@ -2,6 +2,7 @@
 package livepatch
 
 import "base:runtime"
+import "core:time"
 
 // Each attempt that fails the RIP check waits 1 ms
 MAX_ATTEMPTS :: 100
@@ -42,7 +43,7 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 			break
 		}
 		resume_all(handles)
-		sleep_briefly()
+		time.sleep(time.Millisecond)
 	}
 	if !suspended {
 		return false

@@ -2,6 +2,7 @@
 package livepatch
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -138,7 +139,7 @@ page_free :: proc(mem: rawptr) {
 }
 
 commit_at :: proc(start: uintptr, size: int) -> bool {
-	for page := start & ~uintptr(0xFFF); page < start + uintptr(size); page += 0x1000 {
+	for page := mem.align_backward_uintptr(start, 0x1000); page < start + uintptr(size); page += 0x1000 {
 		info: win.MEMORY_BASIC_INFORMATION
 		if win.VirtualQuery(rawptr(page), &info, size_of(info)) == 0 {
 			return false
@@ -255,10 +256,6 @@ resume_all :: proc(handles: Suspended_Threads) {
 		win.CloseHandle(thread)
 	}
 	delete(handles)
-}
-
-sleep_briefly :: proc() {
-	win.Sleep(1)
 }
 
 current_process_id :: proc() -> int {
