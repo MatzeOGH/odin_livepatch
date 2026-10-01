@@ -4,6 +4,7 @@ package livepatch_demo
 // feed raylib input into microui, and draw microui's command list with raylib.
 // You rarely edit this file — the demo you edit lives in main.odin's `frame`.
 
+import "core:unicode/utf8"
 import mu "vendor:microui"
 import rl "vendor:raylib"
 
@@ -38,14 +39,14 @@ mu_handle_input :: proc(ctx: ^mu.Context) {
 	if rl.IsMouseButtonPressed(.RIGHT)  { mu.input_mouse_down(ctx, mx, my, .RIGHT) }
 	if rl.IsMouseButtonReleased(.RIGHT) { mu.input_mouse_up(ctx, mx, my, .RIGHT) }
 
-	for {
-		ch := rl.GetCharPressed()
-		if ch == 0 { break }
-		bytes, n := utf8_encode(ch)
+	for ch := rl.GetCharPressed(); ch != 0; ch = rl.GetCharPressed() {
+		bytes, n := utf8.encode_rune(ch)
 		mu.input_text(ctx, string(bytes[:n]))
 	}
-	if rl.IsKeyPressed(.BACKSPACE) { mu.input_key_down(ctx, .BACKSPACE) }
-	if rl.IsKeyPressed(.ENTER)     { mu.input_key_down(ctx, .RETURN) }
+	if rl.IsKeyPressed(.BACKSPACE)  { mu.input_key_down(ctx, .BACKSPACE) }
+	if rl.IsKeyReleased(.BACKSPACE) { mu.input_key_up(ctx, .BACKSPACE) }
+	if rl.IsKeyPressed(.ENTER)      { mu.input_key_down(ctx, .RETURN) }
+	if rl.IsKeyReleased(.ENTER)     { mu.input_key_up(ctx, .RETURN) }
 }
 
 // Draw microui's command list. Call inside BeginDrawing/EndDrawing, after `frame`.
@@ -84,21 +85,4 @@ to_rect :: proc(r: mu.Rect) -> rl.Rectangle {
 @(private="file")
 to_color :: proc(c: mu.Color) -> rl.Color {
 	return {c.r, c.g, c.b, c.a}
-}
-
-// Minimal UTF-8 encoder for GetCharPressed runes (avoids pulling in unicode/utf8 just for this).
-@(private="file")
-utf8_encode :: proc(r: rune) -> (buf: [4]u8, n: int) {
-	c := u32(r)
-	switch {
-	case c < 0x80:
-		buf[0] = u8(c); n = 1
-	case c < 0x800:
-		buf[0] = 0xC0 | u8(c >> 6);   buf[1] = 0x80 | u8(c & 0x3F); n = 2
-	case c < 0x10000:
-		buf[0] = 0xE0 | u8(c >> 12);  buf[1] = 0x80 | u8((c >> 6) & 0x3F); buf[2] = 0x80 | u8(c & 0x3F); n = 3
-	case:
-		buf[0] = 0xF0 | u8(c >> 18);  buf[1] = 0x80 | u8((c >> 12) & 0x3F); buf[2] = 0x80 | u8((c >> 6) & 0x3F); buf[3] = 0x80 | u8(c & 0x3F); n = 4
-	}
-	return
 }

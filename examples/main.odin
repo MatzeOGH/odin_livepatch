@@ -89,7 +89,7 @@ when DEMO_4 {
 }
 
 main :: proc() {
-	rl.InitWindow(WIDTH, HEIGHT, "Odin livepatch demo edit frame(), press F5 or save")
+	rl.InitWindow(WIDTH, HEIGHT, "Odin livepatch demo: edit frame(), press F5 or save")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
