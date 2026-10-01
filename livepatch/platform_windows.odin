@@ -1,6 +1,7 @@
 #+build windows amd64
 package livepatch
 
+import pe "core:debug/pe"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -39,10 +40,10 @@ pe_headers :: proc "contextless" (image: rawptr) -> ^win.IMAGE_NT_HEADERS64 {
 	return (^win.IMAGE_NT_HEADERS64)(uintptr(image) + uintptr(dos_header.e_lfanew))
 }
 
-pe_sections :: proc "contextless" (image: rawptr) -> []Coff_Section_Header {
+pe_sections :: proc "contextless" (image: rawptr) -> []pe.Section_Header32 {
 	nt_headers := pe_headers(image)
 	first := uintptr(nt_headers) + 4 + size_of(win.IMAGE_FILE_HEADER) + uintptr(nt_headers.FileHeader.SizeOfOptionalHeader)
-	return ([^]Coff_Section_Header)(rawptr(first))[:nt_headers.FileHeader.NumberOfSections]
+	return ([^]pe.Section_Header32)(rawptr(first))[:nt_headers.FileHeader.NumberOfSections]
 }
 
 exe_image_size :: proc "contextless" () -> uintptr {
@@ -50,7 +51,7 @@ exe_image_size :: proc "contextless" () -> uintptr {
 }
 
 // The section of `image` that holds `rva`
-pe_section_at :: proc(image: rawptr, rva: uintptr) -> (section: ^Coff_Section_Header, ok: bool) {
+pe_section_at :: proc(image: rawptr, rva: uintptr) -> (section: ^pe.Section_Header32, ok: bool) {
 	for &candidate in pe_sections(image) {
 		start := uintptr(candidate.virtual_address)
 		if rva >= start && rva < start + uintptr(candidate.virtual_size) {
@@ -104,7 +105,7 @@ make_exe_writable :: proc() -> Error {
 	base := exe_base()
 	old_protect: win.DWORD
 	for &section in pe_sections(rawptr(base)) {
-		if section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
+		if section.characteristics & .MEM_EXECUTE != {} {
 			if !win.VirtualProtect(rawptr(base + uintptr(section.virtual_address)), win.SIZE_T(section.virtual_size), win.PAGE_EXECUTE_READWRITE, &old_protect) {
 				return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}
 			}
@@ -144,7 +145,7 @@ commit_at :: proc(start: uintptr, size: int) -> bool {
 		if win.VirtualQuery(rawptr(page), &info, size_of(info)) == 0 {
 			return false
 		}
-		granule := page & ~uintptr(0xFFFF)
+		granule := mem.align_backward_uintptr(page, 0x10000)
 		switch info.State {
 		case win.MEM_COMMIT:
 			if page not_in own_pages {
