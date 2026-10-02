@@ -231,3 +231,224 @@ own_pages: map[uintptr]bool
 
 // x86-64 keeps the instruction cache coherent with stores
 flush_icache :: proc "contextless" (addr: rawptr, size: int) {}
+
+MAX_STOPPED :: 1024
+
+// 1 ms each
+STOP_WAIT_ATTEMPTS :: 2000
+
+// The offset of the interrupted PC in ucontext_t: uc_flags, uc_link, uc_stack (24 bytes), then gregs, where REG_RIP is 16
+UCONTEXT_PC :: 40 + 16 * 8
+
+Stop_Entry :: struct {
+	tid:      i32, // 0 once the thread is gone
+	acked:    u32, // the stop generation that the thread acknowledged
+	pc:       uintptr,
+	unpaused: bool, // it blocks the signal, so it keeps running
+}
+
+stop: struct {
+	entries:   [MAX_STOPPED]Stop_Entry,
+	count:     int,
+	gen:       u32,           // the current stop
+	released:  sync.Futex,    // stopped threads wait until it reaches their generation
+	installed: bool,
+}
+
+Suspended_Threads :: struct {
+	count: int,
+}
+
+stop_handler :: proc "c" (signal: posix.Signal, info: ^posix.siginfo_t, ucontext: rawptr) {
+	generation := sync.atomic_load(&stop.gen)
+	if i32(u32(sync.atomic_load(&stop.released)) - generation) >= 0 {
+		return // late, from a stop that is over
+	}
+	thread_id := i32(linux.gettid())
+	listed := sync.atomic_load(&stop.count)
+	found := false
+	for i in 0 ..< listed {
+		entry := &stop.entries[i]
+		if sync.atomic_load(&entry.tid) == thread_id {
+			entry.pc = (^uintptr)(uintptr(ucontext) + UCONTEXT_PC)^
+			sync.atomic_store(&entry.acked, generation)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return // not listed yet: the signal for this stop follows
+	}
+	for {
+		released := sync.atomic_load(&stop.released)
+		if i32(u32(released) - generation) >= 0 {
+			return
+		}
+		sync.futex_wait(&stop.released, u32(released))
+	}
+}
+
+install_stop_handler :: proc() -> bool {
+	if stop.installed {
+		return true
+	}
+	action: posix.sigaction_t
+	action.sa_sigaction = stop_handler
+	action.sa_flags = {.SIGINFO, .RESTART}
+	if posix.sigaction(posix.Signal(LIVEPATCH_SIGNAL), &action, nil) != .OK {
+		return false
+	}
+	stop.installed = true
+	return true
+}
+
+suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
+	install_stop_handler() or_return
+	generation := stop.gen + 1
+	sync.atomic_store(&stop.count, 0)
+	sync.atomic_store(&stop.gen, generation)
+
+	pid := linux.getpid()
+	self_tid := i32(linux.gettid())
+	for {
+		added, fits := signal_new_threads(pid, self_tid, generation)
+		handles.count = stop.count
+		if !fits {
+			return handles, false
+		}
+		wait_for_acks(pid, generation) or_return
+		if !added {
+			return handles, true
+		}
+	}
+}
+
+signal_new_threads :: proc(pid: linux.Pid, self_tid: i32, generation: u32) -> (added, fits: bool) {
+	fits = true
+	task_dir, open_err := linux.open("/proc/self/task", {.DIRECTORY, .CLOEXEC})
+	if open_err != .NONE {
+		return false, false
+	}
+	defer linux.close(task_dir)
+	dirent_buffer: [8192]u8
+	for {
+		bytes_read, getdents_err := linux.getdents(task_dir, dirent_buffer[:])
+		if getdents_err != .NONE {
+			return added, false
+		}
+		if bytes_read <= 0 {
+			return
+		}
+		offset := 0
+		for dirent in linux.dirent_iterate_buf(dirent_buffer[:bytes_read], &offset) {
+			tid_value, is_tid := strconv.parse_i64_of_base(linux.dirent_name(dirent), 10)
+			thread_id := i32(tid_value)
+			if !is_tid || thread_id == self_tid || is_listed(thread_id) {
+				continue
+			}
+			if stop.count == MAX_STOPPED {
+				fits = false
+				continue
+			}
+			entry := &stop.entries[stop.count]
+			entry.acked, entry.pc, entry.unpaused = 0, 0, false
+			if blocks_stop_signal(thread_id) {
+				entry.acked, entry.unpaused = generation, true
+				sync.atomic_store(&entry.tid, thread_id)
+				sync.atomic_store(&stop.count, stop.count + 1)
+				continue
+			}
+			sync.atomic_store(&entry.tid, thread_id)
+			sync.atomic_store(&stop.count, stop.count + 1)
+			if kill_err := linux.tgkill(pid, linux.Pid(thread_id), linux.Signal(LIVEPATCH_SIGNAL)); kill_err != .NONE {
+				sync.atomic_store(&entry.tid, 0)
+				if kill_err != .ESRCH {
+					return added, false // the signal cannot be sent (qemu-user cannot send 62)
+				}
+			}
+			added = true
+		}
+	}
+}
+
+wait_for_acks :: proc(pid: linux.Pid, generation: u32) -> bool {
+	for _ in 0 ..< STOP_WAIT_ATTEMPTS {
+		all_acked := true
+		for i in 0 ..< stop.count {
+			entry := &stop.entries[i]
+			thread_id := sync.atomic_load(&entry.tid)
+			if thread_id == 0 || sync.atomic_load(&entry.acked) == generation {
+				continue
+			}
+			if linux.tgkill(pid, linux.Pid(thread_id), linux.Signal(0)) == .ESRCH {
+				sync.atomic_store(&entry.tid, 0)
+				continue
+			}
+			all_acked = false
+		}
+		if all_acked {
+			return true
+		}
+		time.sleep(time.Millisecond)
+	}
+	return false
+}
+
+is_listed :: proc(thread_id: i32) -> bool {
+	for i in 0 ..< stop.count {
+		if stop.entries[i].tid == thread_id {
+			return true
+		}
+	}
+	return false
+}
+
+
+blocks_stop_signal :: proc(thread_id: i32) -> bool {
+	path: [64]u8
+	fmt.bprintf(path[:], "/proc/self/task/%d/status\x00", thread_id)
+	status_fd, open_err := linux.open(cstring(raw_data(path[:])), {.CLOEXEC})
+	if open_err != .NONE {
+		return false
+	}
+	defer linux.close(status_fd)
+	status_buffer: [4096]u8
+	bytes_read, _ := linux.read(status_fd, status_buffer[:])
+	text := string(status_buffer[:max(bytes_read, 0)])
+	sigblk_pos := strings.index(text, "SigBlk:")
+	if sigblk_pos < 0 {
+		return false
+	}
+	mask_line, _, _ := strings.partition(text[sigblk_pos + len("SigBlk:"):], "\n")
+	blocked_mask, parsed := strconv.parse_u64_of_base(strings.trim_space(mask_line), 16)
+	return parsed && blocked_mask & (1 << uint(LIVEPATCH_SIGNAL - 1)) != 0
+}
+
+ip_conflicts :: proc(handles: Suspended_Threads, regions: []Range) -> bool {
+	for i in 0 ..< handles.count {
+		entry := &stop.entries[i]
+		if sync.atomic_load(&entry.tid) == 0 || entry.unpaused {
+			continue
+		}
+		for region in regions {
+			if entry.pc >= region.lo && entry.pc < region.hi {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+unpaused_threads :: proc() -> (count: int) {
+	for i in 0 ..< stop.count {
+		if stop.entries[i].unpaused && stop.entries[i].tid != 0 {
+			count += 1
+		}
+	}
+	return
+}
+
+resume_all :: proc(handles: Suspended_Threads) {
+	sync.atomic_store(&stop.released, sync.Futex(stop.gen))
+	sync.futex_broadcast(&stop.released)
+}
