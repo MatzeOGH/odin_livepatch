@@ -222,15 +222,27 @@ elf_symbol_section_index :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym
 }
 
 Elf_Symbols :: struct {
-	symbols: map[string]uintptr, // canonical name -> live address
+	symbols: map[string]uintptr, // stable key (data_key) -> live address
 	starts:  [dynamic]uintptr,   // live address of every symbol
-	tls:     map[string]uintptr, // canonical name -> offset in the TLS block, for STT_TLS
+	tls:     map[string]uintptr, // stable key (data_key) -> offset in the TLS block, for STT_TLS
 }
 
-read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.allocator) -> (out: Elf_Symbols) {
+// With `stable_keys`, statics are indexed by data_key, for lookups from a later build; without,
+// by their full link name, for lookups from the same build.
+read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.allocator, stable_keys := true) -> (out: Elf_Symbols) {
 	out.symbols = make(map[string]uintptr, allocator)
 	out.starts = make([dynamic]uintptr, allocator)
 	out.tls = make(map[string]uintptr, allocator)
+
+	keys: Static_Keys
+	if stable_keys {
+		names := make([dynamic]string, context.temp_allocator)
+		for &sym in view.syms {
+			append(&names, elf_symbol_name(view, &sym))
+		}
+		keys = static_keys_make(names[:])
+	}
+
 	for &sym in view.syms {
 		section_index := elf_symbol_section_index(view, &sym) or_continue
 		if view.sections[section_index].flags & SHF_ALLOC == 0 {
@@ -245,17 +257,23 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 		if name == "" {
 			continue
 		}
-		canonical := canonical_data_name(name)
+		key := data_key(keys, name)
+		if key == FRESH {
+			if sym_type != STT_TLS {
+				append(&out.starts, bias + uintptr(sym.value))
+			}
+			continue
+		}
 		if sym_type == STT_TLS {
-			if canonical not_in out.tls {
-				out.tls[strings.clone(canonical, allocator)] = uintptr(sym.value)
+			if key not_in out.tls {
+				out.tls[strings.clone(key, allocator)] = uintptr(sym.value)
 			}
 			continue
 		}
 		live_address := bias + uintptr(sym.value)
 		append(&out.starts, live_address)
-		if canonical not_in out.symbols {
-			out.symbols[strings.clone(canonical, allocator)] = live_address
+		if key not_in out.symbols {
+			out.symbols[strings.clone(key, allocator)] = live_address
 		}
 	}
 	return

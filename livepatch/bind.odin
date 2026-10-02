@@ -28,6 +28,7 @@ Merged :: struct {
 	redirects:      [dynamic]Redirect,
 	slot_targets:   [dynamic]Slot_Target,
 	new_globals:    [dynamic]string, // writable data that this patch adds
+	keys:           Static_Keys,     // stable keys of the statics in the patch objects
 	has_type_table: bool,
 	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the patch module
 }
@@ -41,6 +42,15 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.slot_targets = make([dynamic]Slot_Target, allocator)
 	merged.new_globals = make([dynamic]string, allocator)
 	seen := make(map[string]bool, allocator)
+
+	names := make([dynamic]string, context.temp_allocator)
+	for &object in objects {
+		cursor := 0
+		for symbol in next_object_symbol(&object, &cursor) {
+			append(&names, symbol.name)
+		}
+	}
+	merged.keys = static_keys_make(names[:], allocator)
 
 	for &object in objects {
 		cursor := 0
@@ -65,7 +75,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 			case .Code:
 				// Never redirect the patcher while it runs, Nor the JIT interface hook
 				if strings.has_prefix(name, "livepatch::") || name == JIT_REGISTER_NAME {
-					if exe_address, found := exe_symbol_address(name); found {
+					if exe_address, found := exe_symbol_address(name, merged.keys); found {
 						merged.defs[name] = exe_address
 					}
 					continue
@@ -75,7 +85,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 					continue
 				}
 				// A redirect needs REDIRECT_SIZE bytes for the jump
-				if exe_address, found := exe_symbol_address(name); found && exe_room(exe_address) >= REDIRECT_SIZE {
+				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
 				} else if slot := slot_for(name); slot != nil {
@@ -86,9 +96,9 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local && !strings.contains(name, "::") {
 					continue
 				}
-				if exe_address, found := exe_symbol_address(name); found {
+				if exe_address, found := exe_symbol_address(name, merged.keys); found {
 					merged.defs[name] = exe_address
-				} else if stored, in_store := global_store[canonical_data_name(name)]; in_store {
+				} else if stored, in_store := global_store[data_key(merged.keys, name)]; in_store {
 					merged.defs[name] = stored
 				} else {
 					append(&merged.new_globals, name)
@@ -113,7 +123,7 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 			if name in merged.defs || name in merged.defined || name in merged.externals {
 				continue
 			}
-			addr, found := exe_symbol_address(name)
+			addr, found := exe_symbol_address(name, merged.keys)
 			if !found {
 				addr, found = loaded_export(name)
 			}

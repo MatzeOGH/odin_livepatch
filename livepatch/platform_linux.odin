@@ -23,7 +23,7 @@ exe_view:  Elf_View
 exe_bias:  uintptr
 exe_start: uintptr // the live image
 exe_end:   uintptr
-exe_tls:   map[string]uintptr // canonical name: offset in the exe's TLS template
+exe_tls:   map[string]uintptr // stable key (data_key): offset in the exe's TLS template
 
 exe_probe: u8
 
@@ -115,10 +115,14 @@ exe_file_byte :: proc(addr: uintptr) -> (file_byte: u8, ok: bool) {
 	return
 }
 
-exe_tls_offset :: proc(name: string) -> (offset: i64, ok: bool) {
+exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, ok: bool) {
 	@(static) delta: i64
 	@(static) have_delta: bool
-	value := exe_tls[canonical_data_name(name)] or_return
+	key := data_key(keys, name)
+	if key == FRESH {
+		return
+	}
+	value := exe_tls[key] or_return
 	if !have_delta {
 		probe_value := exe_tls["livepatch::tls_probe"] or_return
 		thread_pointer: uintptr

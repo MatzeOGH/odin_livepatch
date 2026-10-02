@@ -12,7 +12,7 @@ PATCH_MODULE_DIRNAME :: "livepatch_mod"
 
 Patch_Module :: struct {
 	base:    uintptr,
-	symbols: map[string]uintptr, // canonical link name -> address, from the module's symbols
+	symbols: map[string]uintptr, // full link name -> address, from the module's symbols
 }
 
 link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Merged) -> (mod: Patch_Module, err: Error) {

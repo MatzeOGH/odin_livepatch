@@ -15,13 +15,19 @@ load_exe_symbols :: proc(exe_path: string) {
 	exe_starts = starts[:]
 }
 
-// Reads an MSVC-format map
-read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allocator, starts: ^[dynamic]uintptr = nil) -> (index: map[string]uintptr) {
+read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allocator, starts: ^[dynamic]uintptr = nil, stable_keys := true) -> (index: map[string]uintptr) {
 	index = make(map[string]uintptr, allocator)
 	data, read_err := os.read_entire_file_from_path(map_path, context.temp_allocator)
 	if read_err != nil {
 		return
 	}
+
+	Line :: struct {
+		name: string,
+		live: uintptr,
+	}
+	lines := make([dynamic]Line, context.temp_allocator)
+	names := make([dynamic]string, context.temp_allocator)
 
 	preferred: uintptr
 	have_preferred := false
@@ -42,9 +48,18 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 		if starts != nil {
 			append(starts, live)
 		}
-		key := canonical_data_name(name)
-		if key not_in index {
-			index[strings.clone(key, allocator)] = live
+		append(&lines, Line{name, live})
+		append(&names, name)
+	}
+
+	keys: Static_Keys
+	if stable_keys {
+		keys = static_keys_make(names[:])
+	}
+	for line in lines {
+		key := data_key(keys, line.name)
+		if key != FRESH && key not_in index {
+			index[strings.clone(key, allocator)] = line.live
 		}
 	}
 	return

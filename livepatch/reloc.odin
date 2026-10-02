@@ -87,7 +87,7 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 				}
 				symbol := coff_symbol_at(data, view.symtab_offset, symbol_index)
 				name := coff_symbol_name(symbol, data, view.strtab_offset)
-				tls_target, found := exe_symbol_address(name)
+				tls_target, found := exe_symbol_address(name, merged.keys)
 				tls_start, have_tls := tls_template_start()
 				tls_offset := i64(uintptr(tls_target)) - i64(tls_start)
 				if !found || !have_tls || tls_offset < 0 || tls_offset > i64(max(u32)) || site + 4 > len(data) {

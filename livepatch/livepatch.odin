@@ -128,13 +128,13 @@ when LIVEPATCH {
 		pending.link_time = time.tick_since(phase_start)
 
 		for &redirect in pending.merged.redirects {
-			redirect.body = rawptr(pending.module.symbols[canonical_data_name(redirect.name)] or_else 0)
+			redirect.body = rawptr(pending.module.symbols[redirect.name] or_else 0)
 			if redirect.body == nil {
 				return pending, Unresolved_Symbol{error_text(redirect.name), error_text("patch DLL map")}
 			}
 		}
 		for &slot_target in pending.merged.slot_targets {
-			slot_target.body = rawptr(pending.module.symbols[canonical_data_name(slot_target.name)] or_else 0)
+			slot_target.body = rawptr(pending.module.symbols[slot_target.name] or_else 0)
 			if slot_target.body == nil {
 				return pending, Unresolved_Symbol{error_text(slot_target.name), error_text("patch DLL map")}
 			}
@@ -161,9 +161,8 @@ when LIVEPATCH {
 		commit_time := time.tick_since(phase_start)
 
 		for name in pending.merged.new_globals {
-			key := canonical_data_name(name)
-			if addr, found := pending.module.symbols[key]; found {
-				global_register(key, rawptr(addr))
+			if addr, found := pending.module.symbols[name]; found {
+				global_register(data_key(pending.merged.keys, name), rawptr(addr))
 			}
 		}
 

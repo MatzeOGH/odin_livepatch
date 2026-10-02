@@ -337,7 +337,7 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		win.FreeLibrary(dll)
 		return {}, Load_Failed{kind = .Wrong_Load_Base}
 	}
-	return Patch_Module{base, read_msvc_map(map_path, base, context.temp_allocator)}, nil
+	return Patch_Module{base, read_msvc_map(map_path, base, context.temp_allocator, stable_keys = false)}, nil
 }
 
 when LIVEPATCH {
