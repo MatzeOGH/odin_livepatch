@@ -21,10 +21,6 @@ parse_object :: proc(path: string, data: []byte) -> (object: Loaded_Object, ok: 
 	return Loaded_Object{path, data, view}, true
 }
 
-object_symbol_count :: proc(object: ^Loaded_Object) -> int {
-	return object.view.symbol_count
-}
-
 object_max_image_size :: proc(object: ^Loaded_Object) -> (size: int) {
 	for section_index in 0 ..< object.view.section_count {
 		section := coff_section_header(object.data, object.view.section_headers_offset, section_index)

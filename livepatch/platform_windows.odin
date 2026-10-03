@@ -242,18 +242,13 @@ scan_threads :: proc(handles: ^[dynamic]win.HANDLE, ids: ^[dynamic]win.DWORD, gr
 	return
 }
 
-ip_conflicts :: proc(handles: Suspended_Threads, regions: []Range) -> bool {
+ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
 	for thread in handles {
 		thread_context: win.CONTEXT
 		thread_context.ContextFlags = CONTEXT_CONTROL
-		if !win.GetThreadContext(thread, &thread_context) {
-			continue
-		}
-		rip := uintptr(thread_context.Rip)
-		for region in regions {
-			if rip >= region.lo && rip < region.hi {
-				return true
-			}
+		// An unknown RIP can be in a site
+		if !win.GetThreadContext(thread, &thread_context) || in_unwritten_site(uintptr(thread_context.Rip), unwritten) {
+			return true
 		}
 	}
 	return false
@@ -349,7 +344,8 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		win.FreeLibrary(dll)
 		return {}, Load_Failed{kind = .Wrong_Load_Base}
 	}
-	return Patch_Module{base, read_msvc_map(map_path, base, context.temp_allocator, stable_keys = false)}, nil
+	symbols, _ := read_msvc_map(map_path, base, context.temp_allocator, stable_keys = false)
+	return symbols, nil
 }
 
 when LIVEPATCH {

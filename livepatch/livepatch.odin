@@ -134,21 +134,9 @@ when LIVEPATCH {
 		pending.module = link_and_load(output_dir, pending.objects, &pending.merged) or_return
 		pending.link_time = time.tick_since(phase_start)
 
-		for &redirect in pending.merged.redirects {
-			redirect.body = rawptr(pending.module.symbols[redirect.name] or_else 0)
-			if redirect.body == nil {
-				return pending, Unresolved_Symbol{error_text(redirect.name), error_text("patch DLL map")}
-			}
-		}
-		for &slot_target in pending.merged.slot_targets {
-			slot_target.body = rawptr(pending.module.symbols[slot_target.name] or_else 0)
-			if slot_target.body == nil {
-				return pending, Unresolved_Symbol{error_text(slot_target.name), error_text("patch DLL map")}
-			}
-		}
-		if pending.merged.has_type_table {
-			pending.merged.type_table_new = rawptr(pending.module.symbols["runtime::type_table"] or_else 0)
-		}
+		find_bodies(pending.merged.redirects[:], pending.module) or_return
+		find_bodies(pending.merged.slot_targets[:], pending.module) or_return
+		pending.merged.type_table_new = rawptr(pending.module["runtime::type_table"] or_else 0)
 
 		// Before commit swaps runtime.type_table
 		phase_start = time.tick_now()
@@ -159,10 +147,21 @@ when LIVEPATCH {
 		return pending, nil
 	}
 
+	// Sets the body of each redirect to its address in the patch module
+	find_bodies :: proc(redirects: []Redirect, module: Patch_Module) -> Error {
+		for &redirect in redirects {
+			redirect.body = rawptr(module[redirect.name] or_else 0)
+			if redirect.body == nil {
+				return Unresolved_Symbol{error_text(redirect.name), error_text("patch DLL map")}
+			}
+		}
+		return nil
+	}
+
 	apply :: proc(pending: ^Pending) -> Error {
 		context.allocator = runtime.heap_allocator()
 		phase_start := time.tick_now()
-		if !commit(&pending.merged, find_hooks_in_exe("lp_pre"), find_hooks_in_exe("lp_post"), pending.changed) {
+		if !commit(&pending.merged, find_hooks_in_exe(HOOK_PRE_SECTION), find_hooks_in_exe(HOOK_POST_SECTION), pending.changed) {
 			return Commit_Failed{}
 		}
 		commit_time := time.tick_since(phase_start)
@@ -206,21 +205,17 @@ when LIVEPATCH {
 
 	report_timings :: proc(pending: ^Pending, commit_time: time.Duration) {
 		when LIVEPATCH_TIMINGS {
-			total_symbols := 0
-			for &object in pending.objects {
-				total_symbols += object_symbol_count(&object)
-			}
 			ms :: proc(duration: time.Duration) -> f64 {
 				return time.duration_milliseconds(duration)
 			}
 			fmt.eprintf(
-				"[livepatch] objects=%d symbols=%d redirects=%d slots=%d\n" +
+				"[livepatch] objects=%d redirects=%d slots=%d\n" +
 				"[livepatch]   build    %.1f ms  (compile)\n" +
 				"[livepatch]   bind     %.1f ms\n" +
 				"[livepatch]   link     %.1f ms  (link + load)\n" +
 				"[livepatch]   diff     %.1f ms\n" +
 				"[livepatch]   commit   %.1f ms\n",
-				len(pending.objects), total_symbols, len(pending.merged.redirects), len(pending.merged.slot_targets),
+				len(pending.objects), len(pending.merged.redirects), len(pending.merged.slot_targets),
 				ms(pending.build_time), ms(pending.bind_time), ms(pending.link_time), ms(pending.diff_time), ms(commit_time),
 			)
 			if unpaused := unpaused_threads(); unpaused > 0 {

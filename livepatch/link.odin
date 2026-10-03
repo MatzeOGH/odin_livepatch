@@ -10,10 +10,8 @@ PATCH_MODULE_DIRNAME :: "livepatch_mod"
 
 @(private) patch_generation: int
 
-Patch_Module :: struct {
-	base:    uintptr,
-	symbols: map[string]uintptr, // full link name -> address, from the module's symbols
-}
+// Full link name address, from the symbols of the patch module
+Patch_Module :: map[string]uintptr
 
 link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Merged) -> (mod: Patch_Module, err: Error) {
 	exe_dir, exe_err := os.get_executable_directory(context.temp_allocator)

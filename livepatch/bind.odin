@@ -6,13 +6,7 @@ import "core:path/filepath"
 import "core:strings"
 
 Redirect :: struct {
-	exe_address: rawptr,
-	body:        rawptr,
-	name:        string,
-}
-
-Slot_Target :: struct {
-	slot: rawptr,
+	from: rawptr, // the exe entry redirects or the slot targets
 	body: rawptr,
 	name: string,
 }
@@ -69,10 +63,6 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 			}
 			seen[name] = true
 
-			if name == "runtime::type_table" {
-				merged.has_type_table = true
-			}
-
 			#partial switch symbol.kind {
 			case .Code:
 				// Never redirect the patcher while it runs its procedures and its proc literals, nor the JIT interface hook
@@ -92,7 +82,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 					append(&merged.redirects, Redirect{exe_address, nil, name})
 				} else if slot := slot_for(data_key(merged.keys, name)); slot != nil {
 					merged.defs[name] = slot
-					append(&merged.slot_targets, Slot_Target{slot, nil, name})
+					append(&merged.slot_targets, Redirect{slot, nil, name})
 				}
 			case .Data:
 				// A static of a top-level proc literal has no package prefix

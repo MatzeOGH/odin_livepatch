@@ -8,15 +8,16 @@ import "core:strconv"
 import "core:strings"
 
 load_exe_symbols :: proc(exe_path: string) {
-	starts := make([dynamic]uintptr)
 	map_path := strings.concatenate({strings.trim_suffix(exe_path, filepath.ext(exe_path)), ".map"}, context.temp_allocator)
-	exe_map = read_msvc_map(map_path, exe_base(), context.allocator, &starts)
+	symbols, starts := read_msvc_map(map_path, exe_base(), context.allocator)
 	slice.sort(starts[:])
-	exe_starts = starts[:]
+	exe_map, exe_starts = symbols, starts[:]
 }
 
-read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allocator, starts: ^[dynamic]uintptr = nil, stable_keys := true) -> (index: map[string]uintptr) {
+// `starts` is the live address of every symbol
+read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allocator, stable_keys := true) -> (index: map[string]uintptr, starts: [dynamic]uintptr) {
 	index = make(map[string]uintptr, allocator)
+	starts = make([dynamic]uintptr, allocator)
 	data, read_err := os.read_entire_file_from_path(map_path, context.temp_allocator)
 	if read_err != nil {
 		return
@@ -45,9 +46,7 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 			continue // va 0: an absolute symbol line
 		}
 		live := base + (va - preferred)
-		if starts != nil {
-			append(starts, live)
-		}
+		append(&starts, live)
 		append(&lines, Line{name, live})
 		append(&names, name)
 	}

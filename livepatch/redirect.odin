@@ -25,13 +25,13 @@ call_target :: proc(merged: ^Merged, name: string) -> rawptr {
 prepare_redirects :: proc(merged: ^Merged) -> Error {
 	failed := make([dynamic]string, context.temp_allocator)
 	for redirect in merged.redirects {
-		if redirect.exe_address in sites {
+		if redirect.from in sites {
 			continue
 		}
-		planned, result := plan_site(redirect.exe_address)
+		planned, result := plan_site(redirect.from)
 		switch result {
 		case .Ok:
-			sites[redirect.exe_address] = planned
+			sites[redirect.from] = planned
 		case .Breakpoint:
 			append(&failed, redirect.name)
 		case .No_Memory:
