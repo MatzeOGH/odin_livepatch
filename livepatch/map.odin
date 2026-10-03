@@ -56,11 +56,9 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 	if stable_keys {
 		keys = static_keys_make(names[:])
 	}
+	ambiguous := make(map[string]bool, context.temp_allocator)
 	for line in lines {
-		key := data_key(keys, line.name)
-		if key != FRESH && key not_in index {
-			index[strings.clone(key, allocator)] = line.live
-		}
+		index_add(&index, &ambiguous, data_key(keys, line.name), line.live, allocator)
 	}
 	return
 }

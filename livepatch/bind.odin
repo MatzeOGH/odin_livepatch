@@ -73,8 +73,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 
 			#partial switch symbol.kind {
 			case .Code:
-				// Never redirect the patcher while it runs, Nor the JIT interface hook
-				if strings.has_prefix(name, "livepatch::") || name == JIT_REGISTER_NAME {
+				// Never redirect the patcher while it runs its procedures and its proc literals, nor the JIT interface hook
+				if strings.has_prefix(name, "livepatch::") || strings.contains(name, ANON + "livepatch:") || name == JIT_REGISTER_NAME {
 					if exe_address, found := exe_symbol_address(name, merged.keys); found {
 						merged.defs[name] = exe_address
 					}
@@ -88,12 +88,13 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
-				} else if slot := slot_for(name); slot != nil {
+				} else if slot := slot_for(data_key(merged.keys, name)); slot != nil {
 					merged.defs[name] = slot
 					append(&merged.slot_targets, Slot_Target{slot, nil, name})
 				}
 			case .Data:
-				if symbol.local && !strings.contains(name, "::") {
+				// A static of a top-level proc literal has no package prefix
+				if symbol.local && !strings.contains(name, "::") && !strings.contains(name, ANON) {
 					continue
 				}
 				if exe_address, found := exe_symbol_address(name, merged.keys); found {
