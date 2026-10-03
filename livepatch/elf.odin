@@ -243,6 +243,7 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 		keys = static_keys_make(names[:])
 	}
 
+	ambiguous := make(map[string]bool, context.temp_allocator)
 	for &sym in view.syms {
 		section_index := elf_symbol_section_index(view, &sym) or_continue
 		if view.sections[section_index].flags & SHF_ALLOC == 0 {
@@ -258,23 +259,13 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 			continue
 		}
 		key := data_key(keys, name)
-		if key == FRESH {
-			if sym_type != STT_TLS {
-				append(&out.starts, bias + uintptr(sym.value))
-			}
-			continue
-		}
 		if sym_type == STT_TLS {
-			if key not_in out.tls {
-				out.tls[strings.clone(key, allocator)] = uintptr(sym.value)
-			}
+			index_add(&out.tls, &ambiguous, key, uintptr(sym.value), allocator)
 			continue
 		}
 		live_address := bias + uintptr(sym.value)
 		append(&out.starts, live_address)
-		if key not_in out.symbols {
-			out.symbols[strings.clone(key, allocator)] = live_address
-		}
+		index_add(&out.symbols, &ambiguous, key, live_address, allocator)
 	}
 	return
 }

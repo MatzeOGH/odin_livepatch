@@ -92,7 +92,6 @@ elem_equal :: proc(left, right: ^runtime.Type_Info) -> bool {
 	return types_equal(left, right)
 }
 
-@(private = "file")
 named_of :: proc(type_info: ^runtime.Type_Info) -> (runtime.Type_Info_Named, bool) {
 	if type_info == nil {
 		return {}, false
