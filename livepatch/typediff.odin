@@ -3,18 +3,11 @@ package livepatch
 
 import "base:runtime"
 import "core:reflect"
-import "core:strings"
+import "core:slice"
 
 diff_types :: proc(old_table, new_table: []^runtime.Type_Info, allocator := context.temp_allocator) -> []Type_Change {
-	old_by_name := make(map[string]^runtime.Type_Info, len(old_table), allocator)
-	for old_type in old_table {
-		if old_type == nil {
-			continue
-		}
-		if named, ok := old_type.variant.(runtime.Type_Info_Named); ok {
-			old_by_name[qualified_name(named, allocator)] = old_type
-		}
-	}
+	old_by_name := named_types(old_table, allocator)
+	new_by_name := named_types(new_table, allocator)
 
 	changed := make([dynamic]Type_Change, 0, 0, allocator)
 	for new_type in new_table {
@@ -22,7 +15,16 @@ diff_types :: proc(old_table, new_table: []^runtime.Type_Info, allocator := cont
 			continue
 		}
 		named := new_type.variant.(runtime.Type_Info_Named) or_continue
-		old_type := old_by_name[qualified_name(named, allocator)] or_continue
+		name := Type_Name{named.pkg, named.name}
+		old_types := (old_by_name[name] or_continue)[:]
+		new_types := new_by_name[name][:]
+		if len(old_types) != len(new_types) {
+			old_types, new_types = in_file(old_types, file_of(new_type)), in_file(new_types, file_of(new_type))
+			if len(old_types) != len(new_types) {
+				continue
+			}
+		}
+		old_type := old_types[slice.linear_search(new_types, new_type) or_else 0]
 		if !types_equal(old_type, new_type) {
 			append(&changed, Type_Change{name = named.name, old = old_type, new = new_type})
 		}
@@ -30,8 +32,54 @@ diff_types :: proc(old_table, new_table: []^runtime.Type_Info, allocator := cont
 	return changed[:]
 }
 
-qualified_name :: proc(named: runtime.Type_Info_Named, allocator: runtime.Allocator) -> string {
-	return strings.concatenate({named.pkg, "::", named.name}, allocator)
+named_types :: proc(table: []^runtime.Type_Info, allocator: runtime.Allocator) -> map[Type_Name][dynamic]^runtime.Type_Info {
+	by_name := make(map[Type_Name][dynamic]^runtime.Type_Info, len(table), allocator)
+	for type_info in table {
+		if type_info == nil {
+			continue
+		}
+		named := type_info.variant.(runtime.Type_Info_Named) or_continue
+		name := Type_Name{named.pkg, named.name}
+		if name not_in by_name {
+			by_name[name] = make([dynamic]^runtime.Type_Info, allocator)
+		}
+		append(&by_name[name], type_info)
+	}
+	for _, &types in by_name {
+		slice.sort_by(types[:], proc(a, b: ^runtime.Type_Info) -> bool {
+			a_loc := a.variant.(runtime.Type_Info_Named).loc
+			b_loc := b.variant.(runtime.Type_Info_Named).loc
+			if a_loc == nil || b_loc == nil {
+				return a_loc == nil && b_loc != nil
+			}
+			if a_loc.file_path != b_loc.file_path {
+				return a_loc.file_path < b_loc.file_path
+			}
+			return a_loc.line < b_loc.line || a_loc.line == b_loc.line && a_loc.column < b_loc.column
+		})
+	}
+	return by_name
+}
+
+Type_Name :: struct {
+	pkg, name: string,
+}
+
+file_of :: proc(type_info: ^runtime.Type_Info) -> string {
+	loc := type_info.variant.(runtime.Type_Info_Named).loc
+	return loc.file_path if loc != nil else ""
+}
+
+in_file :: proc(types: []^runtime.Type_Info, file: string) -> []^runtime.Type_Info {
+	start := 0
+	for start < len(types) && file_of(types[start]) != file {
+		start += 1
+	}
+	end := start
+	for end < len(types) && file_of(types[end]) == file {
+		end += 1
+	}
+	return types[start:end]
 }
 
 // Only a named type can make a cycle, so an unnamed pointee is compared in full.
