@@ -109,7 +109,14 @@ when LIVEPATCH {
 		}
 
 		pending.merged = merge_symbols(pending.objects)
+		if grew := pending.merged.grew; grew.name != "" {
+			return pending, Global_Grew{error_text(grew.name), grew.old_size, grew.new_size}
+		}
 		resolve_externals(pending.objects, &pending.merged) or_return
+		// The patch does not run the startup code, so such a global would stay zero
+		if name := startup_initialized_global(pending.objects, &pending.merged); name != "" {
+			return pending, Global_Needs_Init{error_text(name)}
+		}
 		for &object in pending.objects {
 			out, failed := retarget_object_references(&object, &pending.merged)
 			if failed != "" {
@@ -160,9 +167,9 @@ when LIVEPATCH {
 		}
 		commit_time := time.tick_since(phase_start)
 
-		for name in pending.merged.new_globals {
-			if addr, found := pending.module.symbols[name]; found {
-				global_register(data_key(pending.merged.keys, name), rawptr(addr))
+		for name, size in pending.merged.new_globals {
+			if addr, found := pending.module[name]; found {
+				global_register(data_key(pending.merged.keys, name), rawptr(addr), size)
 			}
 		}
 

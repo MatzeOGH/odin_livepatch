@@ -125,3 +125,48 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	copy(out[FILE_HDR_SIZE + symbol_count * pe.COFF_SYMBOL_SIZE:], string_table[:])
 	return out
 }
+
+startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) -> string {
+	if len(merged.new_globals) == 0 {
+		return ""
+	}
+	Range :: struct {
+		section, start, end: int,
+	}
+	ranges := make([dynamic]Range, context.temp_allocator)
+	for &object in objects {
+		data, view := object.data, object.view
+		clear(&ranges)
+		cursor := 0
+		for symbol in next_coff_symbol(data, view.symtab_offset, view.symbol_count, &cursor) {
+			section := coff_symbol_section(symbol)
+			if section > 0 && section <= view.section_count && is_global_init_proc(coff_symbol_name(symbol, data, view.strtab_offset)) {
+				size := coff_section_header(data, view.section_headers_offset, section - 1).size_of_raw_data
+				append(&ranges, Range{section, int(symbol.value), int(size)})
+			}
+		}
+		if len(ranges) == 0 {
+			continue
+		}
+		cursor = 0
+		for symbol in next_coff_symbol(data, view.symtab_offset, view.symbol_count, &cursor) {
+			for &r in ranges {
+				if coff_symbol_section(symbol) == r.section && int(symbol.value) > r.start {
+					r.end = min(r.end, int(symbol.value))
+				}
+			}
+		}
+		for r in ranges {
+			for reloc in coff_section_relocs(data, view.section_headers_offset, r.section - 1) {
+				if site := int(reloc.virtual_address); site < r.start || site >= r.end || int(reloc.symbol_table_index) >= view.symbol_count {
+					continue
+				}
+				name := coff_symbol_name(coff_symbol_at(data, view.symtab_offset, int(reloc.symbol_table_index)), data, view.strtab_offset)
+				if name in merged.new_globals {
+					return name
+				}
+			}
+		}
+	}
+	return ""
+}

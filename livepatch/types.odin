@@ -20,6 +20,8 @@ Error :: union {
 	No_Objects_Mapped,      // an object could not be read or rewritten
 	Too_Few_Objects,        // -use-separate-modules is missing
 	Unresolved_Symbol,
+	Global_Needs_Init,      // a global that the patch adds gets its value from code at startup
+	Global_Grew,            // a global stored by value is larger in the patch than its storage (Linux)
 	Load_Failed,            // the patch DLL could not be linked or loaded
 	Breakpoint_In_Redirect,
 	Commit_Failed,          // no safe moment to write, or the exe code is not writable. Nothing was written.
@@ -38,6 +40,8 @@ error_delete :: proc(err: Error) {
 	case Build_Failed:           delete(variant.output, heap)
 	case Load_Failed:            delete(variant.output, heap)
 	case Unresolved_Symbol:      delete(variant.name, heap); delete(variant.object, heap)
+	case Global_Needs_Init:      delete(variant.name, heap)
+	case Global_Grew:            delete(variant.name, heap)
 	case Breakpoint_In_Redirect: delete(variant.procedures, heap)
 	}
 }
@@ -60,6 +64,8 @@ No_Map            :: struct {}
 No_Objects_Mapped :: struct {}
 Too_Few_Objects   :: struct {count: int}
 Unresolved_Symbol :: struct {name: string, object: string}
+Global_Needs_Init :: struct {name: string}
+Global_Grew       :: struct {name: string, old_size, new_size: int}
 
 Load_Failed :: struct {
 	kind:     Load_Error_Kind,

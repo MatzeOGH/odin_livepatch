@@ -70,6 +70,18 @@ exe_section_end :: proc(addr: uintptr) -> int {
 	return int(addr)
 }
 
+exe_holds_variable :: proc(addr: uintptr) -> bool {
+	base := exe_base()
+	section := pe_section_at(rawptr(base), addr - base) or_return
+	return section.characteristics & .MEM_WRITE != {}
+}
+
+exe_holds_code :: proc(addr: uintptr) -> bool {
+	base := exe_base()
+	section := pe_section_at(rawptr(base), addr - base) or_return
+	return section.characteristics & .MEM_EXECUTE != {}
+}
+
 // The live address and size of the first exe section with this name
 exe_section_named :: proc(name: string) -> (addr: uintptr, size: int, ok: bool) {
 	base := exe_base()

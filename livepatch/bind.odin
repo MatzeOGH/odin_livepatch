@@ -27,11 +27,11 @@ Merged :: struct {
 	aliases:        map[string]string, // retargeted link name -> its `lp$N` alias
 	call_aliases:   map[string]string, // procedure link name -> its `lp$cN` alias, for direct calls
 	redirects:      [dynamic]Redirect,
-	slot_targets:   [dynamic]Slot_Target,
-	new_globals:    [dynamic]string, // writable data that this patch adds
-	keys:           Static_Keys,     // stable keys of the statics in the patch objects
-	has_type_table: bool,
-	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the patch module
+	slot_targets:   [dynamic]Redirect,
+	new_globals:    map[string]int, // writable data that this patch adds -> its size, where the object has sizes
+	grew:           Global_Grew,    // the first data that is larger than the storage it binds to
+	keys:           Static_Keys,    // stable keys of the statics in the patch objects
+	type_table_new: rawptr,         // the new build's runtime.type_table slice header, in the patch module
 }
 
 merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
@@ -41,8 +41,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.aliases = make(map[string]string, allocator)
 	merged.call_aliases = make(map[string]string, allocator)
 	merged.redirects = make([dynamic]Redirect, allocator)
-	merged.slot_targets = make([dynamic]Slot_Target, allocator)
-	merged.new_globals = make([dynamic]string, allocator)
+	merged.slot_targets = make([dynamic]Redirect, allocator)
+	merged.new_globals = make(map[string]int, allocator)
 	seen := make(map[string]bool, allocator)
 
 	names := make([dynamic]string, context.temp_allocator)
@@ -86,8 +86,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local {
 					continue
 				}
-				// A redirect needs REDIRECT_SIZE bytes for the jump
-				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_room(exe_address) >= REDIRECT_SIZE {
+				// A redirect needs REDIRECT_SIZE bytes for the jump, in code
+				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_holds_code(uintptr(exe_address)) && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
 				} else if slot := slot_for(data_key(merged.keys, name)); slot != nil {
@@ -99,12 +99,25 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local && !strings.contains(name, "::") && !strings.contains(name, ANON) {
 					continue
 				}
-				if exe_address, found := exe_symbol_address(name, merged.keys); found {
-					merged.defs[name] = exe_address
+				// The data of a constant, such as a slice literal or `&T{}`
+				if strings.has_prefix(name, "csba$") || strings.has_prefix(name, "ggv$") {
+					continue
+				}
+				// Data that was `@(rodata)` in the exe gets storage of its own: the exe copy is read-only
+				storage: rawptr
+				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_holds_variable(uintptr(exe_address)) {
+					storage = exe_address
 				} else if stored, in_store := global_store[data_key(merged.keys, name)]; in_store {
-					merged.defs[name] = stored
-				} else {
-					append(&merged.new_globals, name)
+					storage = stored
+				}
+				if storage == nil {
+					merged.new_globals[name] = symbol.size
+					continue
+				}
+				merged.defs[name] = storage
+				// Larger data would write past its storage, into the next variable
+				if known := variable_sizes[uintptr(storage)]; known > 0 && symbol.size > known && merged.grew.name == "" {
+					merged.grew = {name, known, symbol.size}
 				}
 			}
 		}
