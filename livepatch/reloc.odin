@@ -19,6 +19,8 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 
 	live := make(map[int]uintptr, allocator)
 	retarget := make(map[int]u32, allocator) // symbol index -> index of its `lp$N`
+	callable := make(map[int]string, allocator) // symbol index -> link name, for a symbol that can get an `lp$cN`
+	call_retarget := make(map[int]u32, allocator) // symbol index -> index of its `lp$cN`
 	added_syms := make([dynamic]Coff_Symbol, allocator)
 	added_strings := make([dynamic]u8, allocator)
 	set_long_name :: proc(symbol: ^Coff_Symbol, name: string, added_strings: ^[dynamic]u8, strtab_size: int) {
@@ -49,7 +51,7 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 				// Data: the definition becomes the undefined `lp$N`.
 				live[symbol_index] = uintptr(addr)
 				retarget[symbol_index] = u32(symbol_index)
-				set_long_name(symbol, alias_for(merged, name), &added_strings, strtab_size)
+				set_long_name(symbol, alias_in(&merged.aliases, "lp$", name), &added_strings, strtab_size)
 				symbol.section_number = pe.IMAGE_SYM_UNDEFINED
 				symbol.value = 0
 				symbol.storage_class = .EXTERNAL
@@ -57,11 +59,12 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 			}
 		}
 		alias_sym: Coff_Symbol
-		set_long_name(&alias_sym, alias_for(merged, name), &added_strings, strtab_size)
+		set_long_name(&alias_sym, alias_in(&merged.aliases, "lp$", name), &added_strings, strtab_size)
 		alias_sym.storage_class = .EXTERNAL
 		live[symbol_index] = uintptr(addr)
 		retarget[symbol_index] = u32(view.symbol_count + len(added_syms))
 		append(&added_syms, alias_sym)
+		callable[symbol_index] = name
 	}
 
 	for section_index in 0 ..< view.section_count {
@@ -106,7 +109,17 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 				}
 
 			case reloc.type >= .AMD64_REL32 && reloc.type <= .AMD64_REL32_5:
-				if alias_index, found := retarget[symbol_index]; found {
+				is_call := reloc.type == .AMD64_REL32 && section.characteristics & .MEM_EXECUTE != {} && reloc.virtual_address > 0 && (data[site - 1] == 0xE8 || data[site - 1] == 0xE9)
+				if name, found := callable[symbol_index]; found && is_call {
+					if symbol_index not_in call_retarget {
+						call_sym: Coff_Symbol
+						set_long_name(&call_sym, alias_in(&merged.call_aliases, "lp$c", name), &added_strings, strtab_size)
+						call_sym.storage_class = .EXTERNAL
+						call_retarget[symbol_index] = u32(view.symbol_count + len(added_syms))
+						append(&added_syms, call_sym)
+					}
+					reloc.symbol_table_index = u32le(call_retarget[symbol_index])
+				} else if alias_index, aliased := retarget[symbol_index]; aliased {
 					reloc.symbol_table_index = u32le(alias_index)
 				}
 			}

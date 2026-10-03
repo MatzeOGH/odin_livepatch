@@ -8,12 +8,20 @@ import "core:strings"
 Redirect_Site :: struct {
 	site:    rawptr,
 	tramp:   rawptr,
+	call:    rawptr,
 	written: bool,
 }
 
-@(private) sites: map[rawptr]Redirect_Site // keyed by the exe entry
+sites: map[rawptr]Redirect_Site // keyed by the exe entry
 
-// Sets up the stubs and the trampoline
+call_target :: proc(merged: ^Merged, name: string) -> rawptr {
+	addr := merged.defs[name]
+	if redirect_site, found := sites[addr]; found {
+		return redirect_site.call
+	}
+	return addr // a slot, or a procedure without a redirect
+}
+
 prepare_redirects :: proc(merged: ^Merged) -> Error {
 	failed := make([dynamic]string, context.temp_allocator)
 	for redirect in merged.redirects {
@@ -44,7 +52,6 @@ Plan_Result :: enum {
 
 slots: map[string]rawptr
 
-// The trampoline that a procedure without a redirect is reached through
 slot_for :: proc(name: string) -> rawptr {
 	if slot, found := slots[name]; found {
 		return slot
@@ -56,7 +63,6 @@ slot_for :: proc(name: string) -> rawptr {
 	return slot
 }
 
-// The bytes up to the next symbol or the section end.
 exe_room :: proc(entry: rawptr) -> int {
 	addr := uintptr(entry)
 	room := exe_section_end(addr) - int(addr)
@@ -66,4 +72,3 @@ exe_room :: proc(entry: rawptr) -> int {
 	}
 	return max(room, 0)
 }
-

@@ -61,6 +61,7 @@ plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result
 	if !have_tramp {
 		return {}, .No_Memory
 	}
+	call := rawptr(uintptr(tramp) + uintptr(tramp_lea_size(stack_undo)))
 
 	if !mirror_ok {
 		// A plain jmp cannot keep a breakpoint in its displacement.
@@ -71,7 +72,7 @@ plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result
 		if rel32 < i64(min(i32)) || rel32 > i64(max(i32)) {
 			return {}, .No_Memory
 		}
-		return Redirect_Site{site, tramp, false}, .Ok
+		return Redirect_Site{site, tramp, call, false}, .Ok
 	}
 
 	// A stub for each combination of 0xCC and P on the displacement bytes under a breakpoint.
@@ -96,7 +97,7 @@ plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result
 			return {}, variant == 0 ? .No_Memory : .Breakpoint
 		}
 	}
-	return Redirect_Site{site, tramp, false}, .Ok
+	return Redirect_Site{site, tramp, call, false}, .Ok
 }
 
 // A first instruction that a redirect can keep
@@ -168,16 +169,13 @@ alloc_tramp :: proc(undo := 0) -> (tramp: rawptr, ok: bool) {
 	tramp_used += TRAMP_SIZE
 
 	code := ([^]u8)(tramp)
-	lea_size := 0
-	switch {
-	case undo == 0:
-	case undo < 0x80:
+	lea_size := tramp_lea_size(undo)
+	switch lea_size {
+	case 5:
 		code[0], code[1], code[2], code[3], code[4] = 0x48, 0x8D, 0x64, 0x24, u8(undo) // lea rsp, [rsp+imm8]
-		lea_size = 5
-	case:
+	case 8:
 		code[0], code[1], code[2], code[3] = 0x48, 0x8D, 0xA4, 0x24 // lea rsp, [rsp+imm32]
 		(^i32)(&code[4])^ = i32(undo)
-		lea_size = 8
 	}
 	// jmp [rip+rel] to TRAMP_TARGET
 	code[lea_size], code[lea_size + 1] = 0xFF, 0x25
@@ -185,6 +183,16 @@ alloc_tramp :: proc(undo := 0) -> (tramp: rawptr, ok: bool) {
 	slice.fill(code[lea_size + 6:TRAMP_TARGET], 0xCC)
 	(^u64)(rawptr(uintptr(tramp) + TRAMP_TARGET))^ = 0
 	return tramp, true
+}
+
+tramp_lea_size :: proc(undo: int) -> int {
+	switch {
+	case undo == 0:
+		return 0
+	case undo < 0x80:
+		return 5
+	}
+	return 8
 }
 
 write_tramp_target :: proc "contextless" (tramp, body: rawptr) {

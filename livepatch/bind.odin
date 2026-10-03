@@ -25,6 +25,7 @@ Merged :: struct {
 	defined:        map[string]bool,   // external names that a patch object defines
 	externals:      map[string]rawptr, // undefined name that no object defines -> exe address
 	aliases:        map[string]string, // retargeted link name -> its `lp$N` alias
+	call_aliases:   map[string]string, // procedure link name -> its `lp$cN` alias, for direct calls
 	redirects:      [dynamic]Redirect,
 	slot_targets:   [dynamic]Slot_Target,
 	new_globals:    [dynamic]string, // writable data that this patch adds
@@ -38,6 +39,7 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.defined = make(map[string]bool, allocator)
 	merged.externals = make(map[string]rawptr, allocator)
 	merged.aliases = make(map[string]string, allocator)
+	merged.call_aliases = make(map[string]string, allocator)
 	merged.redirects = make([dynamic]Redirect, allocator)
 	merged.slot_targets = make([dynamic]Slot_Target, allocator)
 	merged.new_globals = make([dynamic]string, allocator)
@@ -150,11 +152,12 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	return nil
 }
 
-alias_for :: proc(merged: ^Merged, name: string) -> string {
-	if alias, found := merged.aliases[name]; found {
+// The alias `<prefix>N` of a name. The first use makes it.
+alias_in :: proc(aliases: ^map[string]string, prefix, name: string) -> string {
+	if alias, found := aliases[name]; found {
 		return alias
 	}
-	alias := fmt.tprintf("lp$%d", len(merged.aliases))
-	merged.aliases[name] = alias
+	alias := fmt.tprintf("%s%d", prefix, len(aliases))
+	aliases[name] = alias
 	return alias
 }

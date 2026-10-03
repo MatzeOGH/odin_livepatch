@@ -91,7 +91,7 @@ needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
 
 // A COFF object with only absolute symbols. A symbol value holds only the low 32 bits of the address
 absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
-	symbol_count := len(merged.aliases) + len(merged.externals)
+	symbol_count := len(merged.aliases) + len(merged.call_aliases) + len(merged.externals)
 	string_table := make([dynamic]u8, context.temp_allocator)
 	append(&string_table, 0, 0, 0, 0) // the size, set below
 	symbols := make([dynamic]Coff_Symbol, 0, symbol_count, context.temp_allocator)
@@ -107,6 +107,9 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	}
 	for name, alias in merged.aliases {
 		add_absolute_symbol(&symbols, &string_table, alias, merged.defs[name])
+	}
+	for name, alias in merged.call_aliases {
+		add_absolute_symbol(&symbols, &string_table, alias, call_target(merged, name))
 	}
 	for name, addr in merged.externals {
 		add_absolute_symbol(&symbols, &string_table, name, addr)
