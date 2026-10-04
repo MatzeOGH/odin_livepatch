@@ -84,6 +84,37 @@ section_holds_variables :: proc(view: ^Elf_View, section: ^Elf64_Shdr) -> bool {
 	return !strings.has_prefix(name, ".data.rel.ro") && name != ".odinti"
 }
 
+// The first global that the patch adds and that a startup procedure sets, or ""
+startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) -> string {
+	if len(merged.new_globals) == 0 {
+		return ""
+	}
+	for &object in objects {
+		view := &object.view
+		for &sym in view.syms {
+			if !is_global_init_proc(elf_symbol_name(view, &sym)) {
+				continue
+			}
+			section_index := elf_symbol_section_index(view, &sym) or_continue
+			for &rela_section in view.sections {
+				if rela_section.type != SHT_RELA || int(rela_section.info) != section_index || int(rela_section.link) != view.symtab {
+					continue
+				}
+				relas := elf_section_relas(object.data, &rela_section) or_continue
+				for &rela in relas {
+					symbol_index := int(elf_rela_symbol_index(rela.info))
+					if rela.offset < sym.value || rela.offset >= sym.value + sym.size || symbol_index >= len(view.syms) {
+						continue
+					}
+					if name := elf_symbol_name(view, &view.syms[symbol_index]); name in merged.new_globals {
+						return name
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
 
 Near_References :: struct {
 	names: map[string]bool, // undefined names that some rel32 reaches
