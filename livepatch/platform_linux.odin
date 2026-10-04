@@ -466,3 +466,30 @@ resume_all :: proc(handles: Suspended_Threads) {
 	sync.atomic_store(&stop.released, sync.Futex(stop.gen))
 	sync.futex_broadcast(&stop.released)
 }
+
+current_process_id :: proc() -> int {
+	return int(linux.getpid())
+}
+
+debugger_attached :: proc() -> bool {
+	status, read_err := os.read_entire_file_from_path("/proc/self/status", context.temp_allocator)
+	if read_err != nil {
+		return true
+	}
+	_, _, rest := strings.partition(string(status), "TracerPid:")
+	tracer, _, _ := strings.partition(rest, "\n")
+	return strings.trim_space(tracer) != "0"
+}
+
+loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
+	if strings.contains(name, "::") {
+		return
+	}
+	c_name := strings.clone_to_cstring(name, context.temp_allocator)
+	symbol_addr := posix.dlsym(nil, c_name) // RTLD_DEFAULT
+	return symbol_addr, symbol_addr != nil
+}
+
+build_command :: proc(script, output_dir: string) -> []string {
+	return slice.clone([]string{"/bin/sh", script, output_dir}, context.temp_allocator)
+}
