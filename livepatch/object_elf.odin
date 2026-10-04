@@ -93,6 +93,125 @@ Elf_Rewrite :: struct {
 	symbols_by_section: [][dynamic]int,  // section index: the named symbols that it defines
 }
 
+Relocation_Class :: enum {
+	Ignored,      // no relocation, or debug info of a thread-local
+	Thread_Local, // code that reaches a thread-local
+	Other,
+}
+
+retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allocator := context.temp_allocator) -> (out: []byte, failed: string) {
+	data := object.data
+	view := &object.view
+	rewrite := Elf_Rewrite{
+		object             = object,
+		merged             = merged,
+		added_syms         = make([dynamic]Elf64_Sym, allocator),
+		added_strings      = make([dynamic]u8, allocator),
+		alias_index        = make(map[string]u32, allocator),
+		symbols_by_section = make([][dynamic]int, len(view.sections), allocator),
+	}
+	for &list in rewrite.symbols_by_section {
+		list = make([dynamic]int, allocator)
+	}
+	for &sym, symbol_index in view.syms {
+		section_index := elf_symbol_section_index(view, &sym) or_continue
+		sym_type := elf_symbol_type(sym.info)
+		if sym_type != STT_SECTION && sym_type != STT_FILE && sym.name != 0 {
+			append(&rewrite.symbols_by_section[section_index], symbol_index)
+		}
+	}
+
+	for &rela_section in view.sections {
+		if rela_section.type != SHT_RELA {
+			continue
+		}
+		patched_index := int(rela_section.info)
+		if int(rela_section.link) != view.symtab || patched_index <= 0 || patched_index >= len(view.sections) {
+			continue
+		}
+		patched_section := &view.sections[patched_index]
+		section_bytes := elf_section_bytes(data, patched_section) or_continue
+		relas, relas_ok := elf_section_relas(data, &rela_section)
+		if !relas_ok {
+			return nil, "<relocation table>"
+		}
+		in_code := patched_section.flags & SHF_EXECINSTR != 0
+		allocated := patched_section.flags & SHF_ALLOC != 0
+
+		for &rela, rela_index in relas {
+			rela_type := elf_rela_type(rela.info)
+			symbol_index := int(elf_rela_symbol_index(rela.info))
+			if symbol_index >= len(view.syms) {
+				return nil, "<relocation symbol>"
+			}
+			switch classify_relocation(rela_type) {
+			case .Ignored:
+			case .Thread_Local:
+				if allocated && !rewrite_tls_to_local_exec(&rewrite, section_bytes, relas, rela_index) {
+					name := elf_symbol_name(view, &view.syms[symbol_index])
+					return nil, name if name != "" else "<thread-local>"
+				}
+			case .Other:
+				target_offset := rela.addend
+				if in_code {
+					target_offset = reference_target_offset(rela_type, rela.addend, section_bytes, int(rela.offset))
+				}
+				if key, bound := binding_key(&rewrite, symbol_index, target_offset); bound {
+					// A call or a tail jmp goes to the trampoline. A reference to the address stays on the exe entry.
+					is_call := in_code && rela_type == R_X86_64_PLT32 && elf_symbol_type(view.syms[symbol_index].info) != STT_SECTION
+					alias := alias_in(&merged.call_aliases, "lp$c", key) if is_call else alias_in(&merged.aliases, "lp$", key)
+					rela.info = elf_rela_info(alias_symbol_index(&rewrite, alias), rela_type)
+				}
+			}
+		}
+	}
+
+	symtab_section := &view.sections[view.symtab]
+	strtab_index := int(symtab_section.link)
+	symbol_count := len(view.syms) + len(rewrite.added_syms)
+	symtab_offset := mem.align_forward_int(len(data), 8)
+	strtab_offset := symtab_offset + symbol_count * size_of(Elf64_Sym)
+	out = make([]byte, strtab_offset + len(view.strtab) + len(rewrite.added_strings), allocator)
+	copy(out, data)
+	copy(out[symtab_offset:], slice.to_bytes(view.syms))
+	copy(out[symtab_offset + len(view.syms) * size_of(Elf64_Sym):], slice.to_bytes(rewrite.added_syms[:]))
+	copy(out[strtab_offset:], view.strtab)
+	copy(out[strtab_offset + len(view.strtab):], rewrite.added_strings[:])
+
+	out_sections := ([^]Elf64_Shdr)(raw_data(out[view.header.shoff:]))[:len(view.sections)]
+	out_sections[view.symtab].offset = u64(symtab_offset)
+	out_sections[view.symtab].size = u64(symbol_count * size_of(Elf64_Sym))
+	out_sections[strtab_index].offset = u64(strtab_offset)
+	out_sections[strtab_index].size = u64(len(view.strtab) + len(rewrite.added_strings))
+	return out, ""
+}
+
+binding_key :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, target_offset: i64) -> (key: string, ok: bool) {
+	view := &rewrite.object.view
+	sym := &view.syms[symbol_index]
+	if elf_symbol_type(sym.info) != STT_SECTION {
+		name := elf_symbol_name(view, sym)
+		if name != "" && name in rewrite.merged.defs {
+			return name, true
+		}
+		return
+	}
+
+	section_index := elf_symbol_section_index(view, sym) or_return
+	section := &view.sections[section_index]
+	if section.flags & (SHF_ALLOC | SHF_TLS) != SHF_ALLOC || !section_holds_variables(view, section) {
+		return
+	}
+	holder_index := symbol_covering_offset(rewrite, section_index, target_offset) or_return
+	holder_name := elf_symbol_name(view, &view.syms[holder_index])
+	live_address := rewrite.merged.defs[holder_name] or_return
+	holder_value := view.syms[holder_index].value
+	key = fmt.tprintf("%s\x00%x", holder_name, holder_value)
+	if key not_in rewrite.merged.defs {
+		rewrite.merged.defs[key] = rawptr(uintptr(live_address) - uintptr(holder_value))
+	}
+	return key, true
+}
 
 symbol_covering_offset :: proc(rewrite: ^Elf_Rewrite, section_index: int, offset: i64) -> (symbol_index: int, ok: bool) {
 	for candidate in rewrite.symbols_by_section[section_index] {
@@ -104,6 +223,24 @@ symbol_covering_offset :: proc(rewrite: ^Elf_Rewrite, section_index: int, offset
 	}
 	return
 }
+
+alias_symbol_index :: proc(rewrite: ^Elf_Rewrite, alias: string) -> u32 {
+	if index, found := rewrite.alias_index[alias]; found {
+		return index
+	}
+	alias_sym := Elf64_Sym{
+		name  = u32(len(rewrite.object.view.strtab) + len(rewrite.added_strings)),
+		info  = elf_symbol_info(STB_GLOBAL, STT_NOTYPE),
+		shndx = SHN_UNDEF,
+	}
+	append(&rewrite.added_strings, alias)
+	append(&rewrite.added_strings, 0)
+	index := u32(len(rewrite.object.view.syms) + len(rewrite.added_syms))
+	append(&rewrite.added_syms, alias_sym)
+	rewrite.alias_index[alias] = index
+	return index
+}
+
 thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_in_symbol: i64) -> (offset: i32, ok: bool) {
 	view := &rewrite.object.view
 	sym := &view.syms[symbol_index]
@@ -120,4 +257,52 @@ thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_i
 		return
 	}
 	return i32(total), true
+}
+
+absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
+	string_table := make([dynamic]u8, context.temp_allocator)
+	append(&string_table, "\x00.strtab\x00.symtab\x00")
+	symbols := make([dynamic]Elf64_Sym, 0, 1 + len(merged.aliases) + len(merged.call_aliases) + len(merged.externals), context.temp_allocator)
+	append(&symbols, Elf64_Sym{})
+	add_absolute_symbol :: proc(symbols: ^[dynamic]Elf64_Sym, string_table: ^[dynamic]u8, name: string, addr: rawptr) {
+		append(symbols, Elf64_Sym{
+			name  = u32(len(string_table)),
+			info  = elf_symbol_info(STB_GLOBAL, STT_NOTYPE),
+			shndx = SHN_ABS,
+			value = u64(uintptr(addr)),
+		})
+		append(string_table, name)
+		append(string_table, 0)
+	}
+	for key, alias in merged.aliases {
+		add_absolute_symbol(&symbols, &string_table, alias, merged.defs[key])
+	}
+	for name, alias in merged.call_aliases {
+		add_absolute_symbol(&symbols, &string_table, alias, call_target(merged, name))
+	}
+	for name, addr in merged.externals {
+		add_absolute_symbol(&symbols, &string_table, name, addr)
+	}
+
+	symtab_offset := size_of(Elf64_Ehdr)
+	strtab_offset := symtab_offset + len(symbols) * size_of(Elf64_Sym)
+	section_headers_offset := mem.align_forward_int(strtab_offset + len(string_table), 8)
+	out := make([]byte, section_headers_offset + 3 * size_of(Elf64_Shdr), context.temp_allocator)
+	header := (^Elf64_Ehdr)(raw_data(out))
+	header.ident = {0x7F, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	header.type = ET_REL
+	header.machine = ELF_MACHINE
+	header.version = 1
+	header.shoff = u64(section_headers_offset)
+	header.ehsize = size_of(Elf64_Ehdr)
+	header.shentsize = size_of(Elf64_Shdr)
+	header.shnum = 3
+	header.shstrndx = 1
+	copy(out[symtab_offset:], slice.to_bytes(symbols[:]))
+	copy(out[strtab_offset:], string_table[:])
+	sections := ([^]Elf64_Shdr)(raw_data(out[section_headers_offset:]))[:3]
+	sections[1] = {name = 1, type = SHT_STRTAB, offset = u64(strtab_offset), size = u64(len(string_table)), addralign = 1}
+	sections[2] = {name = 9, type = SHT_SYMTAB, offset = u64(symtab_offset), size = u64(len(symbols) * size_of(Elf64_Sym)),
+	               link = 1, info = 1, addralign = 8, entsize = size_of(Elf64_Sym)}
+	return out
 }

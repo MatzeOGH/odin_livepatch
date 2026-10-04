@@ -1,6 +1,66 @@
 #+build linux amd64
 package livepatch
 
+classify_relocation :: proc "contextless" (rela_type: u32) -> Relocation_Class {
+	switch rela_type {
+	case R_X86_64_NONE, R_X86_64_DTPOFF64, R_X86_64_DTPMOD64, R_X86_64_TPOFF64:
+		return .Ignored
+	case R_X86_64_GOTTPOFF, R_X86_64_TLSGD, R_X86_64_TLSLD, R_X86_64_DTPOFF32, R_X86_64_TPOFF32:
+		return .Thread_Local
+	}
+	return .Other
+}
+
+
+reference_target_offset :: proc(rela_type: u32, addend: i64, code: []byte, site: int) -> i64 {
+	switch rela_type {
+	case R_X86_64_PC32, R_X86_64_PLT32, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX:
+		return addend + 4 + i64(rip_operand_immediate_size(code, site))
+	}
+	return addend
+}
+// The bytes between a RIP-relative displacement at `site` and the end of its instruction
+rip_operand_immediate_size :: proc(code: []byte, site: int) -> int {
+	if site < 2 || site > len(code) {
+		return 0
+	}
+	modrm := code[site - 1]
+	if modrm & 0xC7 != 0x05 {
+		return 0 // not a [rip+disp32] operand
+	}
+	opcode := code[site - 2]
+	if site >= 4 && code[site - 4] == 0x0F && code[site - 3] == 0x3A {
+		return 1 // 0F 3A: every opcode takes an imm8
+	}
+	if site >= 3 && code[site - 3] == 0x0F {
+		switch opcode {
+		case 0x70 ..= 0x73, 0xA4, 0xAC, 0xBA, 0xC2, 0xC4 ..= 0xC6:
+			return 1
+		}
+		return 0
+	}
+	// A 0x66 prefix, possibly before a REX prefix, makes a 32-bit immediate 16-bit.
+	prefix_pos := site - 3
+	if prefix_pos >= 0 && code[prefix_pos] >= 0x40 && code[prefix_pos] <= 0x4F {
+		prefix_pos -= 1
+	}
+	imm32_size := 4
+	if prefix_pos >= 0 && code[prefix_pos] == 0x66 {
+		imm32_size = 2
+	}
+	modrm_reg := (modrm >> 3) & 7
+	switch opcode {
+	case 0x80, 0x82, 0x83, 0xC0, 0xC1, 0xC6, 0x6B:
+		return 1
+	case 0x81, 0xC7, 0x69:
+		return imm32_size
+	case 0xF6:
+		return modrm_reg <= 1 ? 1 : 0 // test
+	case 0xF7:
+		return modrm_reg <= 1 ? imm32_size : 0 // test
+	}
+	return 0
+}
 
 // Rewrites the thread-local access at relas[rela_index] to local-exec
 rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []Elf64_Rela, rela_index: int) -> (ok: bool) {
