@@ -311,7 +311,7 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 	if debugger_attached() {
 		fmt.sbprintf(&response, "/debug:full\n")
 	}
-	fmt.sbprintf(&response, "/opt:noref /opt:noicf /incremental:no\n")
+	fmt.sbprintf(&response, "/opt:noref /opt:noicf\n")
 	fmt.sbprintf(&response, "\"/out:%s\"\n\"/map:%s\"\n\"%s\"\n", dll_path, map_path, absolute_object_path)
 	for &object in objects {
 		fmt.sbprintf(&response, "\"%s\"\n", object.path)
