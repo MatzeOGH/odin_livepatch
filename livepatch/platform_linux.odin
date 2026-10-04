@@ -493,3 +493,46 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 build_command :: proc(script, output_dir: string) -> []string {
 	return slice.clone([]string{"/bin/sh", script, output_dir}, context.temp_allocator)
 }
+
+when LIVEPATCH {
+
+	Jit_Code_Entry :: struct {
+		next_entry:   ^Jit_Code_Entry,
+		prev_entry:   ^Jit_Code_Entry,
+		symfile_addr: rawptr,
+		symfile_size: u64,
+	}
+
+	Jit_Descriptor :: struct {
+		version:        u32,
+		action_flag:    u32, // 1: register relevant_entry
+		relevant_entry: ^Jit_Code_Entry,
+		first_entry:    ^Jit_Code_Entry,
+	}
+
+	@(export, link_name = "__jit_debug_descriptor")
+	jit_debug_descriptor := Jit_Descriptor{version = 1}
+
+	// The debugger sets a breakpoint here.
+	@(export, link_name = "__jit_debug_register_code")
+	jit_debug_register_code :: proc "c" () {
+		sync.atomic_signal_fence(.Seq_Cst)
+	}
+
+	register_with_debugger :: proc(symfile: []byte) {
+		entry := new(Jit_Code_Entry)
+		entry^ = {next_entry = jit_debug_descriptor.first_entry, symfile_addr = raw_data(symfile), symfile_size = u64(len(symfile))}
+		if entry.next_entry != nil {
+			entry.next_entry.prev_entry = entry
+		}
+		jit_debug_descriptor.first_entry = entry
+		jit_debug_descriptor.relevant_entry = entry
+		jit_debug_descriptor.action_flag = 1
+		jit_debug_register_code()
+	}
+
+} else {
+
+	register_with_debugger :: proc(symfile: []byte) {}
+
+}
