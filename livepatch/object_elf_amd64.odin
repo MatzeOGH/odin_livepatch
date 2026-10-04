@@ -11,6 +11,9 @@ classify_relocation :: proc "contextless" (rela_type: u32) -> Relocation_Class {
 	return .Other
 }
 
+is_rel32_reference :: proc "contextless" (rela_type: u32) -> bool {
+	return rela_type == R_X86_64_PLT32 || rela_type == R_X86_64_PC32
+}
 
 reference_target_offset :: proc(rela_type: u32, addend: i64, code: []byte, site: int) -> i64 {
 	switch rela_type {
@@ -19,6 +22,7 @@ reference_target_offset :: proc(rela_type: u32, addend: i64, code: []byte, site:
 	}
 	return addend
 }
+
 // The bytes between a RIP-relative displacement at `site` and the end of its instruction
 rip_operand_immediate_size :: proc(code: []byte, site: int) -> int {
 	if site < 2 || site > len(code) {

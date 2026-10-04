@@ -84,6 +84,38 @@ section_holds_variables :: proc(view: ^Elf_View, section: ^Elf64_Shdr) -> bool {
 	return !strings.has_prefix(name, ".data.rel.ro") && name != ".odinti"
 }
 
+
+Near_References :: struct {
+	names: map[string]bool, // undefined names that some rel32 reaches
+}
+
+find_near_references :: proc(objects: []Loaded_Object) -> (refs: Near_References) {
+	refs.names = make(map[string]bool, context.temp_allocator)
+	for &object in objects {
+		view := &object.view
+		for &rela_section in view.sections {
+			if rela_section.type != SHT_RELA || int(rela_section.link) != view.symtab {
+				continue
+			}
+			relas := elf_section_relas(object.data, &rela_section) or_continue
+			for &rela in relas {
+				if !is_rel32_reference(elf_rela_type(rela.info)) {
+					continue
+				}
+				symbol_index := int(elf_rela_symbol_index(rela.info))
+				if symbol_index < len(view.syms) && view.syms[symbol_index].shndx == SHN_UNDEF {
+					refs.names[elf_symbol_name(view, &view.syms[symbol_index])] = true
+				}
+			}
+		}
+	}
+	return
+}
+
+needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
+	return name in refs.names
+}
+
 Elf_Rewrite :: struct {
 	object:             ^Loaded_Object,
 	merged:             ^Merged,
