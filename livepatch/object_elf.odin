@@ -83,3 +83,41 @@ section_holds_variables :: proc(view: ^Elf_View, section: ^Elf64_Shdr) -> bool {
 	name := elf_section_name(view, section)
 	return !strings.has_prefix(name, ".data.rel.ro") && name != ".odinti"
 }
+
+Elf_Rewrite :: struct {
+	object:             ^Loaded_Object,
+	merged:             ^Merged,
+	added_syms:         [dynamic]Elf64_Sym,
+	added_strings:      [dynamic]u8,
+	alias_index:        map[string]u32,  // `lp$N`: its symbol index in this object
+	symbols_by_section: [][dynamic]int,  // section index: the named symbols that it defines
+}
+
+
+symbol_covering_offset :: proc(rewrite: ^Elf_Rewrite, section_index: int, offset: i64) -> (symbol_index: int, ok: bool) {
+	for candidate in rewrite.symbols_by_section[section_index] {
+		sym := &rewrite.object.view.syms[candidate]
+		start := i64(sym.value)
+		if offset >= start && offset < start + max(i64(sym.size), 1) {
+			return candidate, true
+		}
+	}
+	return
+}
+thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_in_symbol: i64) -> (offset: i32, ok: bool) {
+	view := &rewrite.object.view
+	sym := &view.syms[symbol_index]
+	offset_in_symbol := offset_in_symbol
+	if elf_symbol_type(sym.info) == STT_SECTION {
+		section_index := elf_symbol_section_index(view, sym) or_return
+		holder_index := symbol_covering_offset(rewrite, section_index, offset_in_symbol) or_return
+		offset_in_symbol -= i64(view.syms[holder_index].value)
+		sym = &view.syms[holder_index]
+	}
+	symbol_offset := exe_tls_offset(elf_symbol_name(view, sym), rewrite.merged.keys) or_return
+	total := symbol_offset + offset_in_symbol
+	if total < i64(min(i32)) || total > i64(max(i32)) {
+		return
+	}
+	return i32(total), true
+}
