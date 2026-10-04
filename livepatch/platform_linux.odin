@@ -258,7 +258,7 @@ MAX_STOPPED :: 1024
 // 1 ms each
 STOP_WAIT_ATTEMPTS :: 2000
 
-// The offset of the interrupted PC in ucontext_t: uc_flags, uc_link, uc_stack (24 bytes), then gregs, where REG_RIP is 16
+// uc_flags, uc_link, uc_stack (24 bytes), then gregs, where REG_RIP is 16
 UCONTEXT_PC :: 40 + 16 * 8
 
 Stop_Entry :: struct {
@@ -276,9 +276,8 @@ stop: struct {
 	installed: bool,
 }
 
-Suspended_Threads :: struct {
-	count: int,
-}
+// The stopped threads are in `stop`
+Suspended_Threads :: struct {}
 
 stop_handler :: proc "c" (signal: posix.Signal, info: ^posix.siginfo_t, ucontext: rawptr) {
 	generation := sync.atomic_load(&stop.gen)
@@ -333,7 +332,6 @@ suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
 	self_tid := i32(linux.gettid())
 	for {
 		added, fits := signal_new_threads(pid, self_tid, generation)
-		handles.count = stop.count
 		if !fits {
 			return handles, false
 		}
@@ -445,16 +443,11 @@ blocks_stop_signal :: proc(thread_id: i32) -> bool {
 	return parsed && blocked_mask & (1 << uint(LIVEPATCH_SIGNAL - 1)) != 0
 }
 
-ip_conflicts :: proc(handles: Suspended_Threads, regions: []Range) -> bool {
-	for i in 0 ..< handles.count {
+ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
+	for i in 0 ..< stop.count {
 		entry := &stop.entries[i]
-		if sync.atomic_load(&entry.tid) == 0 || entry.unpaused {
-			continue
-		}
-		for region in regions {
-			if entry.pc >= region.lo && entry.pc < region.hi {
-				return true
-			}
+		if sync.atomic_load(&entry.tid) != 0 && !entry.unpaused && in_unwritten_site(entry.pc, unwritten) {
+			return true
 		}
 	}
 	return false
