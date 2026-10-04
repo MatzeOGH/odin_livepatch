@@ -24,8 +24,9 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 	}
 
 	Line :: struct {
-		name: string,
-		live: uintptr,
+		name:           string,
+		live:           uintptr,
+		linker_defined: bool,
 	}
 	lines := make([dynamic]Line, context.temp_allocator)
 	names := make([dynamic]string, context.temp_allocator)
@@ -47,7 +48,7 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 		}
 		live := base + (va - preferred)
 		append(&starts, live)
-		append(&lines, Line{name, live})
+		append(&lines, Line{name, live, strings.has_suffix(strings.trim_space(line), "<linker-defined>")})
 		append(&names, name)
 	}
 
@@ -57,7 +58,16 @@ read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allo
 	}
 	ambiguous := make(map[string]bool, context.temp_allocator)
 	for line in lines {
-		index_add(&index, &ambiguous, data_key(keys, line.name), line.live, allocator)
+		if !line.linker_defined {
+			index_add(&index, &ambiguous, data_key(keys, line.name), line.live, allocator)
+		}
+	}
+	// radlink also lists the name string of each export as a linker-defined symbol
+	for line in lines {
+		key := data_key(keys, line.name)
+		if line.linker_defined && key not_in index && key not_in ambiguous {
+			index_add(&index, &ambiguous, key, line.live, allocator)
+		}
 	}
 	return
 }
