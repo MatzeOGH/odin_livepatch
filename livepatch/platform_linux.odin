@@ -75,20 +75,41 @@ load_exe_symbols :: proc(exe_path: string) {
 	exe_map = exe_symbols.symbols
 	exe_starts = exe_symbols.starts[:]
 	exe_tls = exe_symbols.tls
+	for &sym in view.syms {
+		if elf_symbol_type(sym.info) == STT_OBJECT && sym.size > 0 {
+			_ = elf_symbol_section_index(&view, &sym) or_continue
+			address := exe_bias + uintptr(sym.value)
+			variable_sizes[address] = max(variable_sizes[address], int(sym.size))
+		}
+	}
 }
 
 // The end of the exe section that holds `addr`, or `addr` if no section holds it
 exe_section_end :: proc(addr: uintptr) -> int {
-	for &section in exe_view.sections {
-		if section.flags & SHF_ALLOC == 0 {
-			continue
-		}
-		start := exe_bias + uintptr(section.addr)
-		if addr >= start && addr < start + uintptr(section.size) {
-			return int(start + uintptr(section.size))
-		}
+	if section, found := exe_section_at(addr); found {
+		return int(exe_bias + uintptr(section.addr) + uintptr(section.size))
 	}
 	return int(addr)
+}
+
+exe_holds_variable :: proc(addr: uintptr) -> bool {
+	section := exe_section_at(addr) or_return
+	return section_holds_variables(&exe_view, section)
+}
+
+exe_holds_code :: proc(addr: uintptr) -> bool {
+	section := exe_section_at(addr) or_return
+	return section.flags & SHF_EXECINSTR != 0
+}
+
+exe_section_at :: proc(addr: uintptr) -> (section: ^Elf64_Shdr, ok: bool) {
+	for &candidate in exe_view.sections {
+		start := exe_bias + uintptr(candidate.addr)
+		if candidate.flags & SHF_ALLOC != 0 && addr >= start && addr < start + uintptr(candidate.size) {
+			return &candidate, true
+		}
+	}
+	return
 }
 
 // The live address and size of the first exe section with this name
@@ -119,7 +140,7 @@ exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, o
 	@(static) delta: i64
 	@(static) have_delta: bool
 	key := data_key(keys, name)
-	if key == FRESH {
+	if key == "" {
 		return
 	}
 	value := exe_tls[key] or_return
