@@ -19,7 +19,7 @@ DEBUG=-debug
 # Mandatory: -use-separate-modules and -define:LIVEPATCH=true.
 # Optional: the -o: level, -thread-count, LIVEPATCH_TIMINGS, LIVEPATCH_TOAST, and
 # LIVEPATCH_LD (the linker of the patch, for example -define:LIVEPATCH_LD=mold).
-FLAGS="$DEBUG -o:none -use-separate-modules -thread-count:4 -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true"
+FLAGS="$DEBUG -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true"
 
 if [ -z "$1" ]; then
 	exec "$ODIN" build "$PKG" $FLAGS -out:"$EXE"
