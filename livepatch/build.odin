@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 import "core:os"
@@ -22,7 +22,7 @@ build_output_dir :: proc(allocator := context.temp_allocator) -> (dir: string, e
 	return joined, nil
 }
 
-run_build :: proc(build_script, outdir: string) -> Error {
+run_build :: proc(build_script, output_dir: string) -> Error {
 	script := build_script
 	if !filepath.is_abs(script) {
 		if exe_dir, exe_err := os.get_executable_directory(context.temp_allocator); exe_err == nil {
@@ -38,9 +38,11 @@ run_build :: proc(build_script, outdir: string) -> Error {
 			_ = os.set_env("ODIN", odin)
 		}
 	}
+	// Without a debugger, the patch does not need debug info, so the script can leave out -debug.
+	_ = os.set_env("LIVEPATCH_DEBUGGER", debugger_attached() ? "1" : "0")
 
 	desc := os.Process_Desc{
-		command = build_command(script, outdir),
+		command = build_command(script, output_dir),
 	}
 	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
 	if exec_err != nil {

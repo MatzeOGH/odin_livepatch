@@ -1,20 +1,15 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 import "core:strings"
 
-global_store: map[string]rawptr
+global_store: map[string]rawptr // stable key data_key live address
 
-global_register :: proc(key: string, addr: rawptr) {
-	if key not_in global_store {
+global_register :: proc(key: string, addr: rawptr, size: int) {
+	if key != "" && key not_in global_store {
 		global_store[strings.clone(key)] = addr
+		if size > 0 {
+			variable_sizes[uintptr(addr)] = size
+		}
 	}
-}
-
-canonical_data_name :: proc(name: string) -> string {
-	base := strings.trim_right(name, "0123456789")
-	if len(base) < len(name) && strings.has_suffix(base, "-") && strings.contains(base, "-.") {
-		return base[:len(base) - 1]
-	}
-	return name
 }

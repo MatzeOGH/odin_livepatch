@@ -1,18 +1,27 @@
 @echo off
-rem Builds the demo host, and (with an output dir argument) the patch objects that
-rem patch() maps in. patch() calls this script the second way. Every flag is required.
-rem Run the first form once by hand to produce demo.exe next to this script.
+rem Builds the demo. Run it once with no argument to build demo.exe.
+rem patch() runs it with an output directory to build the patch objects.
+rem Both modes use the same flags, so the exe and the patch always match.
 
-rem ODIN is the compiler to call. It defaults to `odin` (on PATH). To build without odin
-rem on PATH, set it first: `set ODIN=C:\path\to\odin.exe`. patch() runs this
-rem script in the running exe's environment, so this covers the F5 rebuild too.
+rem The compiler. Set ODIN if odin is not on PATH. patch() runs this script with the
+rem environment of the demo, so the same value applies to each patch.
 if not defined ODIN set ODIN=odin
 
 set PKG=%~dp0
 set EXE=%~dp0demo.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true
-rem /MAP lists the @static and file-private globals the PDB drops, so patch() can preserve
-rem their state. The obj build links nothing and ignores it.
+
+rem patch() sets LIVEPATCH_DEBUGGER=0 when no debugger is attached. Then the patch needs no
+rem debug info, and the build is faster.
+set DEBUG=-debug
+if "%LIVEPATCH_DEBUGGER%"=="0" set DEBUG=
+
+rem Mandatory: -use-separate-modules and -define:LIVEPATCH=true.
+rem Optional: the -o: level, LIVEPATCH_TIMINGS, and LIVEPATCH_TOAST.
+set FLAGS=%DEBUG% -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true
+
+rem Mandatory for the exe link. /MAP writes demo.map. patch() reads the address of each
+rem symbol from it, @static locals and file-private globals included. The PDB does not
+rem have them. The obj build does not link, so it ignores these flags.
 set LINK=/OPT:NOREF /OPT:NOICF /MAP:%EXE:.exe=.map%
 
 if "%~1"=="" (

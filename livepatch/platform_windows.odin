@@ -1,7 +1,9 @@
 #+build windows amd64
 package livepatch
 
+import pe "core:debug/pe"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -15,6 +17,7 @@ foreign import kernel32 "system:Kernel32.lib"
 foreign kernel32 {
 	FlushInstructionCache :: proc(hProcess: win.HANDLE, lpBaseAddress: rawptr, dwSize: win.SIZE_T) -> win.BOOL ---
 	GetThreadId           :: proc(Thread: win.HANDLE) -> win.DWORD ---
+	IsDebuggerPresent     :: proc() -> win.BOOL ---
 }
 
 foreign import ntdll "system:ntdll.lib"
@@ -33,105 +36,128 @@ exe_base :: proc "contextless" () -> uintptr {
 
 // `image` is a loaded module or the bytes of a PE file. The headers are the same in both.
 pe_headers :: proc "contextless" (image: rawptr) -> ^win.IMAGE_NT_HEADERS64 {
-	dos := (^win.IMAGE_DOS_HEADER)(image)
-	return (^win.IMAGE_NT_HEADERS64)(uintptr(image) + uintptr(dos.e_lfanew))
+	dos_header := (^win.IMAGE_DOS_HEADER)(image)
+	return (^win.IMAGE_NT_HEADERS64)(uintptr(image) + uintptr(dos_header.e_lfanew))
 }
 
-pe_sections :: proc "contextless" (image: rawptr) -> []Coff_Section_Header {
-	nt := pe_headers(image)
-	first := uintptr(nt) + 4 + size_of(win.IMAGE_FILE_HEADER) + uintptr(nt.FileHeader.SizeOfOptionalHeader)
-	return ([^]Coff_Section_Header)(rawptr(first))[:nt.FileHeader.NumberOfSections]
+pe_sections :: proc "contextless" (image: rawptr) -> []pe.Section_Header32 {
+	nt_headers := pe_headers(image)
+	first := uintptr(nt_headers) + 4 + size_of(win.IMAGE_FILE_HEADER) + uintptr(nt_headers.FileHeader.SizeOfOptionalHeader)
+	return ([^]pe.Section_Header32)(rawptr(first))[:nt_headers.FileHeader.NumberOfSections]
 }
 
 exe_image_size :: proc "contextless" () -> uintptr {
 	return uintptr(pe_headers(rawptr(exe_base())).OptionalHeader.SizeOfImage)
 }
 
-// The end of the exe section that holds `a`, or `a` if no section holds it
-exe_section_end :: proc(a: uintptr) -> int {
-	base := exe_base()
-	for &sh in pe_sections(rawptr(base)) {
-		va := base + uintptr(sh.virtual_address)
-		if a >= va && a < va + uintptr(sh.virtual_size) {
-			return int(va + uintptr(sh.virtual_size))
+// The section of `image` that holds `rva`
+pe_section_at :: proc(image: rawptr, rva: uintptr) -> (section: ^pe.Section_Header32, ok: bool) {
+	for &candidate in pe_sections(image) {
+		start := uintptr(candidate.virtual_address)
+		if rva >= start && rva < start + uintptr(candidate.virtual_size) {
+			return &candidate, true
 		}
 	}
-	return int(a)
+	return
+}
+
+// The end of the exe section that holds `addr`, or `addr` if no section holds it
+exe_section_end :: proc(addr: uintptr) -> int {
+	base := exe_base()
+	if section, found := pe_section_at(rawptr(base), addr - base); found {
+		return int(base + uintptr(section.virtual_address) + uintptr(section.virtual_size))
+	}
+	return int(addr)
+}
+
+exe_holds_variable :: proc(addr: uintptr) -> bool {
+	base := exe_base()
+	section := pe_section_at(rawptr(base), addr - base) or_return
+	return section.characteristics & .MEM_WRITE != {}
+}
+
+exe_holds_code :: proc(addr: uintptr) -> bool {
+	base := exe_base()
+	section := pe_section_at(rawptr(base), addr - base) or_return
+	return section.characteristics & .MEM_EXECUTE != {}
 }
 
 // The live address and size of the first exe section with this name
 exe_section_named :: proc(name: string) -> (addr: uintptr, size: int, ok: bool) {
 	base := exe_base()
-	for &sh in pe_sections(rawptr(base)) {
-		if section_name(&sh) == name {
-			return base + uintptr(sh.virtual_address), int(sh.virtual_size), true
+	for &section in pe_sections(rawptr(base)) {
+		if coff_section_name(&section) == name {
+			return base + uintptr(section.virtual_address), int(section.virtual_size), true
 		}
 	}
 	return
 }
 
 // A breakpoint is a 0xCC in memory where the file has another byte
-exe_file_byte :: proc(a: uintptr) -> (b: u8, ok: bool) {
+exe_file_byte :: proc(addr: uintptr) -> (file_byte: u8, ok: bool) {
 	if len(exe_file) == 0 {
 		return
 	}
-	rva := a - exe_base()
-	for &sh in pe_sections(raw_data(exe_file)) {
-		va := uintptr(sh.virtual_address)
-		if rva >= va && rva < va + uintptr(sh.virtual_size) {
-			off := int(sh.pointer_to_raw_data) + int(rva - va)
-			if off < len(exe_file) {
-				return exe_file[off], true
-			}
-			return
-		}
+	rva := addr - exe_base()
+	section := pe_section_at(raw_data(exe_file), rva) or_return
+	offset := rva - uintptr(section.virtual_address)
+	// After size_of_raw_data, the section is zero fill. The file bytes there are of the next section.
+	if offset >= uintptr(section.size_of_raw_data) {
+		return
 	}
-	return
+	file_offset := int(section.pointer_to_raw_data) + int(offset)
+	if file_offset >= len(exe_file) {
+		return
+	}
+	return exe_file[file_offset], true
 }
 
 // Makes the exe code and the type_table header writable
 make_exe_writable :: proc() -> Error {
 	base := exe_base()
-	old: win.DWORD
-	for &sh in pe_sections(rawptr(base)) {
-		if sh.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
-			if !win.VirtualProtect(rawptr(base + uintptr(sh.virtual_address)), win.SIZE_T(sh.virtual_size), win.PAGE_EXECUTE_READWRITE, &old) {
-				return Commit_Failed{}
+	old_protect: win.DWORD
+	for &section in pe_sections(rawptr(base)) {
+		if section.characteristics & .MEM_EXECUTE != {} {
+			if !win.VirtualProtect(rawptr(base + uintptr(section.virtual_address)), win.SIZE_T(section.virtual_size), win.PAGE_EXECUTE_READWRITE, &old_protect) {
+				return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}
 			}
 		}
 	}
-	if tt, found := exe_symbol("runtime::type_table"); found {
-		if !win.VirtualProtect(tt, size_of([]rawptr), win.PAGE_READWRITE, &old) {
-			return Commit_Failed{}
+	if type_table, found := exe_symbol_address("runtime::type_table"); found {
+		if !win.VirtualProtect(type_table, size_of([]rawptr), win.PAGE_READWRITE, &old_protect) {
+			return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}
 		}
 	}
 	return nil
 }
 
-// Allocates at `addr` exactly, or returns nil. Without `commit`, only reserves
 page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
-	kind: win.DWORD = win.MEM_RESERVE
-	prot: win.DWORD = win.PAGE_NOACCESS
+	alloc_type: win.DWORD = win.MEM_RESERVE
+	protect: win.DWORD = win.PAGE_NOACCESS
 	if commit {
-		kind |= win.MEM_COMMIT
-		prot = win.PAGE_EXECUTE_READWRITE
+		alloc_type |= win.MEM_COMMIT
+		protect = win.PAGE_EXECUTE_READWRITE
 	}
-	return win.VirtualAlloc(rawptr(addr), win.SIZE_T(size), kind, prot)
+	return win.VirtualAlloc(rawptr(addr), win.SIZE_T(size), alloc_type, protect)
+}
+
+// Why the last allocation failed
+last_alloc_error :: proc() -> os.Error {
+	return os.Platform_Error(win.GetLastError())
 }
 
 // Frees a whole allocation from page_alloc_at
-page_free :: proc(p: rawptr) {
-	win.VirtualFree(p, 0, win.MEM_RELEASE)
+page_free :: proc(mem: rawptr) {
+	win.VirtualFree(mem, 0, win.MEM_RELEASE)
 }
 
-// Refuses memory that it did not commit or reserve itself
-commit_at :: proc(t: uintptr, n: int) -> bool {
-	for page := t & ~uintptr(0xFFF); page < t + uintptr(n); page += 0x1000 {
+commit_at :: proc(start: uintptr, size: int) -> bool {
+	for page := mem.align_backward_uintptr(start, 0x1000); page < start + uintptr(size); page += 0x1000 {
 		info: win.MEMORY_BASIC_INFORMATION
 		if win.VirtualQuery(rawptr(page), &info, size_of(info)) == 0 {
 			return false
 		}
-		granule := page & ~uintptr(0xFFFF)
+		granule := mem.align_backward_uintptr(page, 0x10000)
 		switch info.State {
 		case win.MEM_COMMIT:
 			if page not_in own_pages {
@@ -171,14 +197,11 @@ suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
 	scan_threads(&handles, &ids, grow = true)
 	reserve(&handles, 2 * len(handles) + 64)
 	reserve(&ids, cap(handles))
-	for t in handles {
-		win.SuspendThread(t)
+	for thread in handles {
+		win.SuspendThread(thread)
 	}
 	for {
-		found, fits := scan_threads(&handles, &ids, grow = false)
-		if !fits {
-			return handles, false
-		}
+		found := scan_threads(&handles, &ids, grow = false) or_return
 		if !found {
 			return handles, true
 		}
@@ -188,18 +211,18 @@ suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
 scan_threads :: proc(handles: ^[dynamic]win.HANDLE, ids: ^[dynamic]win.DWORD, grow: bool) -> (found, fits: bool) {
 	ACCESS :: win.THREAD_SUSPEND_RESUME | win.THREAD_GET_CONTEXT | win.THREAD_QUERY_LIMITED_INFORMATION
 
-	me := win.GetCurrentThreadId()
+	self_id := win.GetCurrentThreadId()
 	fits = true
-	cur, next: win.HANDLE
+	current, next: win.HANDLE
 	kept := false
-	for NtGetNextThread(win.GetCurrentProcess(), cur, ACCESS, 0, 0, &next) >= 0 {
+	for NtGetNextThread(win.GetCurrentProcess(), current, ACCESS, 0, 0, &next) >= 0 {
 
-		if cur != nil && !kept {
-			win.CloseHandle(cur)
+		if current != nil && !kept {
+			win.CloseHandle(current)
 		}
-		cur, kept = next, false
-		id := GetThreadId(cur)
-		if id == me || slice.contains(ids[:], id) {
+		current, kept = next, false
+		thread_id := GetThreadId(current)
+		if thread_id == self_id || slice.contains(ids[:], thread_id) {
 			continue
 		}
 		if !grow && len(handles) == cap(handles) {
@@ -207,49 +230,48 @@ scan_threads :: proc(handles: ^[dynamic]win.HANDLE, ids: ^[dynamic]win.DWORD, gr
 			continue
 		}
 		if !grow {
-			win.SuspendThread(cur)
+			win.SuspendThread(current)
 		}
-		append(handles, cur)
-		append(ids, id)
+		append(handles, current)
+		append(ids, thread_id)
 		kept, found = true, true
 	}
-	if cur != nil && !kept {
-		win.CloseHandle(cur)
+	if current != nil && !kept {
+		win.CloseHandle(current)
 	}
 	return
 }
 
-ip_conflicts :: proc(handles: Suspended_Threads, regions: []Range) -> bool {
-	for h in handles {
-		ctx: win.CONTEXT
-		ctx.ContextFlags = CONTEXT_CONTROL
-		if !win.GetThreadContext(h, &ctx) {
-			continue
-		}
-		rip := uintptr(ctx.Rip)
-		for reg in regions {
-			if rip >= reg.lo && rip < reg.hi {
-				return true
-			}
+ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
+	for thread in handles {
+		thread_context: win.CONTEXT
+		thread_context.ContextFlags = CONTEXT_CONTROL
+		// An unknown RIP can be in a site
+		if !win.GetThreadContext(thread, &thread_context) || in_unwritten_site(uintptr(thread_context.Rip), unwritten) {
+			return true
 		}
 	}
 	return false
 }
 
+unpaused_threads :: proc() -> int {
+	return 0
+}
+
 resume_all :: proc(handles: Suspended_Threads) {
-	#reverse for h in handles {
-		win.ResumeThread(h)
-		win.CloseHandle(h)
+	#reverse for thread in handles {
+		win.ResumeThread(thread)
+		win.CloseHandle(thread)
 	}
 	delete(handles)
 }
 
-sleep_briefly :: proc() {
-	win.Sleep(1)
-}
-
 current_process_id :: proc() -> int {
 	return int(win.GetCurrentProcessId())
+}
+
+debugger_attached :: proc() -> bool {
+	return bool(IsDebuggerPresent())
 }
 
 // An export of any loaded DLL
@@ -262,41 +284,45 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 	if !win.EnumProcessModules(win.GetCurrentProcess(), &modules[0], size_of(modules), &needed) {
 		return
 	}
-	cname := strings.clone_to_cstring(name, context.temp_allocator)
-	for m in modules[:min(int(needed) / size_of(win.HMODULE), len(modules))] {
-		if p := win.GetProcAddress(m, cname); p != nil {
-			return p, true
+	c_name := strings.clone_to_cstring(name, context.temp_allocator)
+	for module in modules[:min(int(needed) / size_of(win.HMODULE), len(modules))] {
+		if proc_addr := win.GetProcAddress(module, c_name); proc_addr != nil {
+			return proc_addr, true
 		}
 	}
 	return
 }
 
 // The command that runs the build script
-build_command :: proc(script, outdir: string) -> []string {
-	return slice.clone([]string{"cmd", "/c", script, outdir}, context.temp_allocator)
+build_command :: proc(script, output_dir: string) -> []string {
+	return slice.clone([]string{"cmd", "/c", script, output_dir}, context.temp_allocator)
 }
 
 // Links `<stem>.dll` for `base` with lld-link, and writes its `<stem>.map`.
-run_linker :: proc(objects: []Loaded_Object, abs_path, stem: string, base: uintptr) -> Error {
-	lld, _ := filepath.join({ODIN_ROOT, "bin", "lld-link.exe"}, context.temp_allocator)
+run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string, base: uintptr) -> Error {
+	lld_path, _ := filepath.join({ODIN_ROOT, "bin", "lld-link.exe"}, context.temp_allocator)
 	dll_path := strings.concatenate({stem, ".dll"}, context.temp_allocator)
 	map_path := strings.concatenate({stem, ".map"}, context.temp_allocator)
 
 	// A response file, because the object list can exceed the command-line limit.
-	rsp := strings.builder_make(context.temp_allocator)
-	fmt.sbprintf(&rsp, "/nologo /dll /noentry /nodefaultlib /machine:x64 /fixed /base:0x%x\n", base)
-	fmt.sbprintf(&rsp, "/debug:full /opt:noref /opt:noicf /incremental:no\n")
-	fmt.sbprintf(&rsp, "\"/out:%s\"\n\"/map:%s\"\n\"%s\"\n", dll_path, map_path, abs_path)
-	for &o in objects {
-		fmt.sbprintf(&rsp, "\"%s\"\n", o.path)
+	response := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&response, "/nologo /dll /noentry /nodefaultlib /machine:x64 /fixed /base:0x%x\n", base)
+	// The PDB is only for a debugger. A debugger that attaches later does not see this patch.
+	if debugger_attached() {
+		fmt.sbprintf(&response, "/debug:full\n")
 	}
-	rsp_path := strings.concatenate({stem, ".rsp"}, context.temp_allocator)
-	if werr := os.write_entire_file(rsp_path, transmute([]u8)strings.to_string(rsp)); werr != nil {
-		return Load_Failed{kind = .Cannot_Write_File, os_error = werr}
+	fmt.sbprintf(&response, "/opt:noref /opt:noicf\n")
+	fmt.sbprintf(&response, "\"/out:%s\"\n\"/map:%s\"\n\"%s\"\n", dll_path, map_path, absolute_object_path)
+	for &object in objects {
+		fmt.sbprintf(&response, "\"%s\"\n", object.path)
+	}
+	response_path := strings.concatenate({stem, ".rsp"}, context.temp_allocator)
+	if write_err := os.write_entire_file(response_path, transmute([]u8)strings.to_string(response)); write_err != nil {
+		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
 	}
 
-	desc := os.Process_Desc{command = []string{lld, strings.concatenate({"@", rsp_path}, context.temp_allocator)}}
-	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
+	process_desc := os.Process_Desc{command = []string{lld_path, strings.concatenate({"@", response_path}, context.temp_allocator)}}
+	state, stdout, stderr, exec_err := os.process_exec(process_desc, context.temp_allocator)
 	if exec_err != nil {
 		return Load_Failed{kind = .Cannot_Run_Linker, os_error = exec_err}
 	}
@@ -307,18 +333,19 @@ run_linker :: proc(objects: []Loaded_Object, abs_path, stem: string, base: uintp
 }
 
 // Loads `<stem>.dll`, which must land at `base`, and reads its symbols from `<stem>.map`.
-load_patch_module :: proc(stem: string, base: uintptr) -> (m: Patch_Module, err: Error) {
+load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object) -> (module: Patch_Module, err: Error) {
 	dll_path := strings.concatenate({stem, ".dll"}, context.temp_allocator)
 	map_path := strings.concatenate({stem, ".map"}, context.temp_allocator)
-	h := win.LoadLibraryExW(win.utf8_to_wstring(dll_path), nil, {})
-	if h == nil {
+	dll := win.LoadLibraryExW(win.utf8_to_wstring(dll_path), nil, {})
+	if dll == nil {
 		return {}, Load_Failed{kind = .Load_Library_Failed, os_error = os.Platform_Error(win.GetLastError())}
 	}
-	if uintptr(h) != base {
-		win.FreeLibrary(h)
+	if uintptr(dll) != base {
+		win.FreeLibrary(dll)
 		return {}, Load_Failed{kind = .Wrong_Load_Base}
 	}
-	return Patch_Module{base, read_map(map_path, base, context.temp_allocator)}, nil
+	symbols, _ := read_msvc_map(map_path, base, context.temp_allocator, stable_keys = false)
+	return symbols, nil
 }
 
 when LIVEPATCH {
@@ -330,7 +357,7 @@ when LIVEPATCH {
 	show_toast :: proc(total: time.Duration) {
 		when LIVEPATCH_TOAST {
 
-			op := u32(win.NIM_MODIFY)
+			notify_message := u32(win.NIM_MODIFY)
 			if toast.hWnd == nil {
 				user32 := win.LoadLibraryW(win.L("user32.dll"))
 				create_window := (proc "system" (win.DWORD, cstring16, cstring16, win.DWORD, i32, i32, i32, i32, win.HWND, win.HMENU, win.HINSTANCE, rawptr) -> win.HWND)(win.GetProcAddress(user32, "CreateWindowExW"))
@@ -346,11 +373,11 @@ when LIVEPATCH {
 				}
 				_ = win.utf8_to_utf16(toast.szTip[:len(toast.szTip) - 1], "livepatch")
 				_ = win.utf8_to_utf16(toast.szInfoTitle[:len(toast.szInfoTitle) - 1], "livepatch")
-				op = win.NIM_ADD
+				notify_message = win.NIM_ADD
 			}
 			toast.szInfo = {}
 			_ = win.utf8_to_utf16(toast.szInfo[:len(toast.szInfo) - 1], fmt.tprintf("Patch applied in %.0f ms", time.duration_milliseconds(total)))
-			win.Shell_NotifyIconW(op, &toast)
+			win.Shell_NotifyIconW(notify_message, &toast)
 		}
 	}
 

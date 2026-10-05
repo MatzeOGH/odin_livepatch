@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 @(require) import "core:os"
@@ -33,7 +33,7 @@ when LIVEPATCH {
 
 	// ignore anything but .odin files
 	watch_change_affects_sources :: proc(name: string) -> bool {
-		return len(name) >= 5 && strings.equal_fold(name[len(name) - 5:], ".odin")
+		return strings.equal_fold(filepath.ext(name), ".odin")
 	}
 
 }

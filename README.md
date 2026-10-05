@@ -1,381 +1,364 @@
-# livepatch for Odin and Windows x64
+# Odin Livepatch
 
-Change code in a running program and retarget it in place, no restart. A developer tool
-for fast iteration, Windows/x64 only. Not a shipping feature.
+Change the code of a running Odin program without a restart. Windows and Linux, x64 only.
 
-> **Work in progress and largely untested.** Expect crashes, gaps, and breaking changes.
-> Do not depend on it.
+> **Build Odin from master!**
 
-## Supported features
+This is a development tool. It is on only with `-define:LIVEPATCH=true`. Without it, every
+call compiles to a no-op, so the calls can stay in shipping source.
 
-- Windows on x64.
-- Change the body of any named procedure. Callers run the new body on the next call.
-- Add new named procedures. Callers reach them through the patched call sites.
-- Keep package-level globals across every patch. New code reads the value the old code left.
-- Keep `@static` locals and file-private globals across every patch, first one included, when
-  the exe is built with `/MAP`. `patch()` reads their live address from the map.
-- Keep a global that a patch adds. It takes its initial value on the patch that adds it, then
-  persists like a base global.
-- Keep procedure pointers (`&proc`) valid. A stored pointer reaches the newest body.
-- Change a type's layout when a migration hook moves the live instances (see
-  [Migrating state across a type change](#migrating-state-across-a-type-change)).
-- Migration hooks (`lp_pre` and `lp_post`) that receive the set of changed types.
-- Watch `.odin` source files and report a settled change for the application to apply.
-- Debug patched procedures in any Windows debugger (VS Code, Visual Studio, RAD Debugger,
-  WinDbg). Breakpoints, stepping, locals, and call stacks work in the new code (see
-  [Debugging patched code](#debugging-patched-code)).
-- Stay in shipping source at no cost. Without `-define:LIVEPATCH=true`, `patch()` compiles
-  to `return nil`.
-
-## Unsupported features
-
-- Any operating system other than Windows, and any CPU other than x64.
-- A layout change to a value stored by value in a package global. Keep evolving state
-  behind a pointer instead.
-- A `typeid` or `any` captured before that type's layout changed. It no longer resolves
-  to the right type.
-- Anonymous procedures (proc literals). The patcher does not redirect them, so re-register
-  stored callbacks after a patch.
-- New `@thread_local` variables. A patch that adds one is rejected.
-- Freeing old code. Old generations stay loaded, so restart after many patches.
-- Migrating stack objects. Only heap state behind a stable pointer migrates.
-
-The [What survives a patch, what does not](#what-survives-a-patch-what-does-not) section
-covers the runtime detail behind these two lists.
-
-One call does everything:
+> **Work in progress.** Expect crashes and breaking changes.
 
 ```odin
 import "livepatch"
 
 if err := livepatch.patch("build_livepatch.bat"); err != nil {
-    log.error(err)   // old code keeps running; nothing was changed
+    log.error(err) // the old code keeps running, nothing changed
 }
 ```
 
-`patch()` rebuilds your package to objects, links them into a DLL, loads the DLL next to the
-running exe, and redirects every procedure to its new body. It blocks until the build finishes, the
-pre/post hooks complete, and the switch is applied or rejected.
+`patch()` runs your build script, links the objects into a patch module, loads it next to
+the exe, and redirects each procedure to its new body. Callers run the new body on the
+next call.
 
-`livepatch` pauses other process threads while it runs hooks and publishes code.
-Your application is still responsible for choosing an appropriate patch point and for
-ensuring hooks do not need a lock held by another thread.
+**livepatch halts the world.** While `patch()` writes the new code and runs the migration
+hooks, all other threads in the process are paused. No thread runs a mix of old and new
+code. The pause is short, a few milliseconds, but your code must allow it:
 
-## Setup
-
-### 1. Build script
-
-Copy `build_livepatch.bat` next to your project and point it at your sources. It has two
-modes: no argument builds the exe, an output directory rebuilds to objects (this is what
-`patch()` calls).
-
-```bat
-@echo off
-set PKG=%~dp0src
-set EXE=%~dp0game.exe
-set FLAGS=-debug -o:none -use-separate-modules -define:LIVEPATCH=true
-set LINK=/OPT:NOREF /OPT:NOICF /MAP:%EXE:.exe=.map%
-
-if "%~1"=="" (
-    odin build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -out:"%EXE%"
-) else (
-    odin build "%PKG%" %FLAGS% -extra-linker-flags:"%LINK%" -build-mode:obj -out:"%~1/"
-)
-```
-
-The `-o:none` build is the default here. It gives the fastest rebuild and lets a debugger
-break on any procedure. You can also build with `-o:speed` or `-o:minimal` for a realtime app
-that needs the speed. A patch stays correct at any level, because each patch rebuilds the
-whole program to objects and redirects every symbol. The new code replaces the old code in
-full.
-
-Two flags must not change for this to hold. Keep `-use-separate-modules`, so the compiler
-inlines only inside one package. Do not turn on cross-module optimization (LTO), so a
-redirected symbol always has its own body. Odin does not enable LTO at any `-o` level by
-default.
-
-The other flags are mandatory. The same script builds the exe and the patch, so they can
-never diverge. **Always build through this script.**
-
-`/MAP` writes `<exe>.map` next to the exe. `patch()` finds every exe symbol in it:
-procedures, globals, `@static` locals and file-private globals. Only the exe build needs
-it. Without it, `patch()` fails with `No_Map`.
-
-### 2. Call patch()
-
-```odin
-main :: proc() {
-    for !should_quit {
-        if key_pressed(.F5) {
-            // Hooks run while other threads are paused. Choose a point where no
-            // worker holds a lock or resource that a hook needs.
-            _ = livepatch.patch("build_livepatch.bat")
-            // Post hooks have finished and workers have resumed.
-        }
-        update()   // callees run new code from the next call
-        render()
-    }
-}
-```
-
-### Watch source saves
-
-`watch_start()` observes `.odin` files recursively below an explicit source root.
-It only reports a settled change: call `watch_poll()` from the application's main
-loop and apply the patch at the same safe point used for a manual patch.
-
-```odin
-watch, err := livepatch.watch_start("src")
-if err != nil {
-    log.error(err)
-}
-defer livepatch.watch_stop(&watch)
-
-for !should_quit {
-    if changed, err := livepatch.watch_poll(&watch); err != nil {
-        log.error(err)
-    } else if changed {
-        if err := livepatch.patch("build_livepatch.bat"); err != nil {
-            log.error(err) // old code keeps running
-        }
-    }
-
-    update()
-    render()
-}
-```
-
-The watcher does not build or patch from a background thread. It debounces editor
-write bursts, then leaves the application to choose the thread-safe moment for
-`patch()`. Only a change to a `.odin` file (save, add, remove or rename) triggers
-a patch. Other files and directories do not. If you move a directory of sources
-into or out of the root, save a `.odin` file or call `patch()` to apply the change.
-Relative source roots are resolved relative to the running exe, as are relative
-build-script paths.
-
-The script path is resolved relative to the exe. A procedure that never returns (the loop
-above) keeps running its old body; keep per-frame logic in procedures called each frame so
-they pick up new code.
-
-`patch()` suspends other process threads before it invokes pre hooks. It keeps them
-paused while it publishes procedure entries, slots, and the type table, and invokes post
-hooks before resuming them. This prevents workers from entering new code before post
-migration completes. A suspended thread may hold an allocator, I/O, or application lock,
-so hooks must not allocate, block, or acquire locks that another thread could hold.
-
-`patch()` returns `nil` on success, or a `livepatch.Error`
-(`Build_Failed`, `No_Map`, `No_Objects_Mapped`, `Too_Few_Objects`, `Unresolved_Symbol`,
-`Load_Failed`, `Breakpoint_In_Redirect`, `Commit_Failed`, `Patch_In_Progress`). On an error,
-nothing changes.
-`Unresolved_Symbol` names what the new code references but cannot bind, such as a new
-`@thread_local`. `Build_Failed` and `Load_Failed` have a `kind` enum, an `os_error`, and an
-`output` with the compiler or linker output.
-The strings in an error are on the heap. Free them with `livepatch.error_delete(err)`.
-`Breakpoint_In_Redirect` is described in [Debugging patched code](#debugging-patched-code).
-Without `-define:LIVEPATCH=true` it compiles to `return nil`, so the call can stay in your
-shipping source permanently.
-
-### Build without stopping the app
-
-`patch()` stops the calling thread for the whole build, about the compile time. To keep
-the app running, use `patch_start()` and `patch_poll()` instead. `patch_start()` starts the
-build, the link and the load on a worker thread and returns at once. Call `patch_poll()`
-once per frame, at the same safe point as `patch()`. When the build is done,
-`patch_poll()` applies the patch there (the commit and the hooks, about 1 ms) and returns
-`finished = true` with the result.
-
-```odin
-patch_again := false
-for !should_quit {
-    if source_changed() {
-        if _, busy := livepatch.patch_start("build_livepatch.bat").(livepatch.Patch_In_Progress); busy {
-            patch_again = true // one patch builds at a time; build again after it
-        }
-    }
-    if finished, err := livepatch.patch_poll(); finished {
-        if err != nil {
-            log.error(err) // old code keeps running
-        }
-        if patch_again {
-            patch_again = false
-            livepatch.patch_start("build_livepatch.bat")
-        }
-    }
-    update()
-    render()
-}
-```
-
-Only one patch builds at a time. While it builds, `patch_start()` and `patch()` return
-`Patch_In_Progress`. The time from a save to the new code is the same as with `patch()`.
-The compiler uses all CPU cores, so the frame rate can drop during the build. To keep a
-core free, add `-thread-count:N` to the build script.
-
-## Build defines
-
-Three `-define` flags control livepatch. Set them in the build script.
-
-| Define | Default | Effect |
-| --- | --- | --- |
-| `LIVEPATCH` | `false` | Compiles the body of `patch()`, `patch_start()`, `patch_poll()`, and the watcher procedures. When it is off, those calls compile to no-ops (`patch()` returns `nil`, `watch_poll()` reports no change), so the calls stay in shipping source at no cost. |
-| `LIVEPATCH_TIMINGS` | `false` | Prints a per-phase timing report to stderr after each patch. The timers always run, so this flag gates only the print. Set it with `-define:LIVEPATCH_TIMINGS=true`. |
-| `LIVEPATCH_TOAST` | `false` | Shows a Windows toast after each patch with the total patch time. A livepatch icon stays in the tray until the process stops. Set it with `-define:LIVEPATCH_TOAST=true`. |
-
-The timing report shows one line per phase, plus the object, symbol, redirect, and slot counts:
-
-```
-[livepatch] objects=44 symbols=2508 redirects=660 slots=34
-[livepatch]   build     450.0 ms  (compile)
-[livepatch]   bind       20.0 ms
-[livepatch]   link      160.0 ms  (link + load)
-[livepatch]   diff        0.6 ms
-[livepatch]   commit     56.0 ms
-```
-
-`build` is the compile step (the build script). `bind` decides where each symbol binds and
-rewrites the objects. `link` links the patch DLL and loads it. `diff` is the type diff, and
-`commit` is the halt-world write step.
-
-## Linkers
-
-`patch()` reads every exe symbol from the exe's `.map` (see [Setup](#1-build-script)). The map must be in the MSVC format. Choose the linker with
-Odin's `-linker:` flag.
-
-| `-linker:` | `/MAP` | Works with `patch()` |
-| --- | --- | --- |
-| `default` (MSVC `link.exe`) | MSVC format | Yes |
-| `lld` | MSVC format | Yes |
-| `radlink` | Not supported | No: `patch()` fails with `No_Map` |
-
-The default linker and `lld` both write the map format the parser reads. `radlink` does
-not implement `/MAP`: a build that passes the flag to it fails with
-`switch "MAP" is not implemented`. Link with `default` or `lld`.
-
-The patch DLL is always linked with `lld-link.exe` from the Odin distribution
-that built the exe (`ODIN_ROOT/bin/lld-link.exe`), whatever linker builds the exe. MSVC is
-not necessary for the patch.
-
-## Debugging patched code
-
-Each patch is a real DLL with a PDB that the linker writes:
-`<exe dir>/livepatch_mod/lp_<pid>_g<N>.dll` and `.pdb`. The DLL loads like any other DLL, so
-a debugger loads its PDB and binds your breakpoints in it. This works in VS Code (the
-`cppvsdbg` debugger), Visual Studio, RAD Debugger, and WinDbg, with no special setup. The
-name is different for each patch, so a debugger never uses the PDB of an earlier patch.
-
-A source breakpoint binds in every module that has the line. After a patch, the exe and
-each earlier patch DLL also have it. Only the newest copy runs, so usually only that copy
-hits. The exception is a breakpoint on the `proc` line itself, set before the first patch:
-it also hits once in the exe copy on each call, and then the call continues into the new
-code.
-
-You can set and remove breakpoints at any time, before or after a patch. `patch()`
-overwrites the first bytes of each old procedure in the exe with a jump, and a debugger
-breakpoint can be on these bytes. The jump is made so that it works while the breakpoint
-is set and also after the debugger removes it (redirect.odin explains how).
-
-`Breakpoint_In_Redirect` remains only for rare cases: breakpoints on both the `proc` line and
-the first line of a small procedure, both set before the first patch. Remove one of them
-and patch again. Nothing changes when `patch()` returns this error.
-
-The patch DLLs stay loaded until the process ends, and `patch()` deletes the old files on
-the first patch of the next run. In VS Code, use forward slashes in a `launch.json`
-`environment` value, for example `"ODIN": "C:/odin/odin.exe"`. The debugger removes
-backslashes from these values.
+- Call `patch()` from a safe point, such as the top of the main loop.
+- In a hook, do not allocate, log, or take a lock. A paused thread can hold that lock, and
+  the hook then waits forever.
 
 ## Try it
 
-`examples/` is a runnable raylib + microui scene wired for livepatch. It shows the whole
-loop: edit a proc, press F5, and the running window changes while the state stays. Odin
-must be on your `PATH`.
-
-```bat
+```sh
 cd examples
-.\build_livepatch.bat
-demo.exe
+./build_livepatch.sh   # Windows: .\build_livepatch.bat
+./demo                 # Windows: demo.exe
 ```
 
-Then edit the `frame` proc in `main.odin`, save, and press F5 in the window. See
-[`examples/README.md`](examples/README.md) for the details.
+Edit `frame` in `examples/main.odin`, save, and press F5. See
+[examples/README.md](examples/README.md).
 
-## Importing the package
+## Setup
 
-This repository holds the package in `livepatch/`. The example imports it with a relative
-path (`import lp "../livepatch"`). For your own project, use a relative import, add a
-collection (`-collection:livepatch=path/to/livepatch`), or copy the package into your Odin
-`core/` and import it as `core:livepatch`.
+1. Copy `examples/build_livepatch.bat` or `examples/build_livepatch.sh` next to your project.
+   Set the package and exe paths in it.
+2. Build the exe with the script and no argument. `patch()` calls the same script with an
+   output directory to build the patch objects.
+3. Call `patch()` at a safe point in your main loop.
 
-### Other targets
+These flags are mandatory: `-use-separate-modules -define:LIVEPATCH=true`. Add `-debug` to
+use a debugger. See [Debugging](#debugging). On
+Windows, the exe link also needs `/OPT:NOREF /OPT:NOICF /MAP`. On Linux, do not strip the
+exe. `patch()` reads its symbol table. See [Optimizations](#optimizations) and
+[Linkers](#linkers).
 
-The package compiles on every target. On anything other than Windows x64 (Windows on ARM64
-included), `patch()` and the watcher are no-op stubs (`patch()` returns `nil`, `watch_poll()` reports no change). So you
-can call them unconditionally and keep the package imported in a cross-platform project
-without any build tags of your own. Live patching only happens on Windows/x64.
+`patch()` sets `LIVEPATCH_DEBUGGER=0` when no debugger is attached. The example scripts
+then drop `-debug` from the patch build, which makes it faster. If your code uses
+`when ODIN_DEBUG`, such a patch runs the other branch.
 
-## What survives a patch, what does not
+Import the package with a relative path, a collection
+(`-collection:livepatch=path/to/livepatch`), or copy it into `core/`.
 
-Preserved:
+## API
 
-- Package-level globals keep their value across patches.
-- **`@static` locals and file-private globals** keep their value across every patch, the
-  first one included. New code uses their exe storage, found in the map.
-- **A global that a patch adds** takes its initial value on the patch that adds it, because
-  the base exe has no copy to seed from, then persists like a base global.
-- Procedure pointers (`&proc`) stay valid — they reach the newest body.
-- In-flight frames finish their old body; the next call runs new code.
+| Procedure | Use |
+| --- | --- |
+| `patch(script)` | Build and apply a patch. Blocks for the build. |
+| `patch_start(script)`, `patch_poll()` | Build on a worker thread. Call `patch_poll()` each frame. It applies the patch when the build is done. |
+| `watch_start(root)`, `watch_poll(&w)`, `watch_stop(&w)` | Report a settled change to a `.odin` file below `root`. You call `patch()`. |
+| `error_delete(err)` | Free the strings in an error. |
 
-Reset or unsafe (the ones that bite):
+On an error, nothing changes. See [Errors and crashes](#errors-and-crashes).
 
-- **Changing the layout of a value that lives in a package global is unsafe.** The global
-  keeps its fixed address and old storage; new code writing new fields can run off the end
-  and corrupt the next global. Keep evolving state behind a pointer and migrate it (below).
-- A **`typeid` or `any`** captured before you change that type's layout no longer resolves
-  to the right type after the patch. Don't store long-lived `any` of types you're editing.
-- **Anonymous procedures** (proc literals) are not redirected; a stored pointer to one
-  keeps calling old code. Re-register callbacks after `patch()`, or use named procs.
-- Changing a procedure's **signature** invalidates pointers stored under the old signature;
-  re-register them.
-- New `@thread_local` variables are rejected. Old code is never freed — restart after many
-  patches.
+On Linux, the pause uses signal 62. To use a different signal, set
+`-define:LIVEPATCH_SIGNAL=<n>`. A thread that blocks this signal keeps running. A debugger
+needs a setup for this signal. See [Linux debugger setup](#linux-debugger-setup).
 
-## Migrating state across a type change
+| Define | Default | Effect |
+| --- | --- | --- |
+| `LIVEPATCH` | `false` | Turns the package on. |
+| `LIVEPATCH_TIMINGS` | `false` | Prints the time of each phase to stderr. |
+| `LIVEPATCH_TOAST` | `false` | Shows a notification after each patch. |
+| `LIVEPATCH_LD` | `""` | Linux: the linker of the patch module. See [Linkers](#linkers). |
 
-Register a migration hook by putting a proc pointer in a named linker section. The patcher
-finds it (no registration call) and passes the set of types whose layout changed.
+## What a patch keeps
+
+livepatch matches the code and data of a patch to the exe by their link names.
+
+- Package globals, `@static` locals, and file-private globals keep their values.
+- `@(rodata)` globals and `@(static, rodata)` locals always get the values of the patch. When a
+  patch removes `@(rodata)`, the variable gets new storage with its initial value from the
+  patch: the exe copy is read-only.
+- A global that a patch adds gets its initial value once, then persists. The initial value
+  must be a constant. If the startup code must compute it, such as `table := make_table()` or
+  a `map` literal, `patch()` returns `Global_Needs_Init`.
+- Procedure pointers (`&proc`) go to the newest body.
+- A pointer to a proc literal or to a nested procedure goes to the newest body, and its
+  `@static` and `@thread_local` locals keep their values. This is true when its parent
+  procedure (or the file scope) has the same number of literals in that file, or of nested
+  procedures with that name.
+- A generic instance over a local type is the same procedure after a patch, when its scope
+  has the same number of local types with that name.
+- A `@(private)` declaration keeps its pointers and values when a patch moves it to another
+  file, unless another file has a private or public declaration with that name.
+- A running call finishes its old body. A procedure that never returns, such as `main`,
+  keeps its old body.
+
+## Limits
+
+- If a patch adds or removes a proc literal in a procedure, the literals of that procedure in
+  that file are not redirected. A stored pointer to one of them keeps the old body. Register
+  these callbacks again after the patch. The same is true for nested procedures with the
+  same name. If such a procedure has a `@thread_local` local, the patch fails.
+
+  ```odin
+  register :: proc() {
+      on_open = proc() { open_file() }
+      on_save = proc() { save_file() }
+      on_quit = proc() { quit() } // new in the patch: 3 literals, before 2
+  }
+  ```
+
+  After this patch, `on_open` and `on_save` keep their old bodies until `register` runs again.
+- A patch cannot add a `@thread_local` variable.
+- A patch cannot add a global whose initial value the startup code computes (`Global_Needs_Init`).
+- Old code stays in memory. Restart after many patches.
+- On other targets, the API compiles to no-ops.
+
+## Errors and crashes
+
+### Errors
+
+When `patch()` returns an error, the running program does not change.
+
+| Error | Cause |
+| --- | --- |
+| `Build_Failed` | The build script failed or did not start. `output` has the compiler output. |
+| `No_Map` | Windows: the exe has no `.map` file (no `/MAP`). Linux: the exe is stripped. |
+| `No_Objects_Mapped` | An object file could not be read or rewritten. |
+| `Too_Few_Objects` | The build script does not use `-use-separate-modules`. |
+| `Unresolved_Symbol` | The new code uses a symbol that `patch()` cannot bind, such as a new `@thread_local`. |
+| `Global_Grew` | Linux: a global stored by value (or a `@static` local) is larger in the patch than its storage in the exe or in an earlier patch. New code would write past its end. `name`, `old_size` and `new_size` tell which. |
+| `Global_Needs_Init` | The patch adds a global whose initial value the startup code computes, such as `n := count()` or a `map` literal. A patch does not run the startup code, so the global would stay zero. `name` is the global. |
+| `Load_Failed` | The patch module could not be linked or loaded. `output` has the linker output. |
+| `Breakpoint_In_Redirect` | Windows: two debugger breakpoints block the redirect. See [Debugging](#debugging). |
+| `Commit_Failed` | The exe code could not be made writable. Linux: a hardened kernel or SELinux refuses `mprotect`. |
+| `Patch_In_Progress` | A patch from `patch_start()` is not finished. |
+
+The strings in an error are on the heap. Free them with `error_delete(err)`.
+
+### Hangs and crashes
+
+`patch()` cannot detect these problems. The program hangs, crashes, or uses incorrect data.
+
+- **A hook allocates, logs, or takes a lock.** All other threads are paused. If a paused
+  thread holds the allocator, I/O, or application lock, the hook waits forever. Allocate
+  all memory for the migration before you call `patch()`.
+- **A type layout changes in a global stored by value.** The global keeps its old storage. On
+  Linux, `patch()` returns `Global_Grew` when the global is larger in the patch. On Windows, the
+  object files have no symbol sizes, so new code writes past the end and corrupts the next
+  global. When the size stays the same, new code reads the old bytes in the new layout. Put
+  the state behind a pointer.
+- **A type layout changes and no post hook migrates the heap data.** New code reads data in
+  the old layout.
+- **A type layout changes in a stack value.** A hook cannot migrate stack data. This
+  includes the locals of `main` and of other procedures that never return.
+- **A stored `typeid` or `any` refers to a changed type.** It resolves to the old type info.
+- **A procedure signature changes and a stored pointer uses the old signature.** The call
+  passes incorrect arguments. Store the pointer again after the patch.
+- **A procedure signature changes and a procedure that never returns calls it.** `main` keeps
+  its old body, so it calls the new body with the old arguments:
+
+  ```odin
+  main :: proc() {
+      for !done {
+          step(1) // compiled for `step :: proc(frames: int)`
+      }
+  }
+  // The patch changes it to `step :: proc(dt: f64, scale: f64)`. main still passes one int.
+  ```
+
+  With `-o:speed`, LLVM can also put the result of a small procedure directly into `main`.
+  For example, `limit :: proc() -> int { return 10 }` can become the constant 10 in `main`, and
+  a patch to `limit` then has no effect there. Keep the loop in `main` short, and put the
+  work in procedures that return.
+- **Two proc literals or nested procedures change places.** livepatch matches them by their
+  order in their procedure. When a patch changes the order and the count stays the same, a
+  stored pointer goes to the other body:
+
+  ```odin
+  register :: proc() {
+      on_open = proc() { open_file() } // first
+      on_save = proc() { save_file() } // second
+  }
+  // The patch changes the order of the two lines. The pointer that the exe stored in
+  // on_open now goes to the first literal of the patch: save_file.
+  ```
+
+  The same is true for two `@static` locals with one name in one procedure, and for two local
+  types with one name. Register callbacks again after such a patch.
+- **Linux: a thread blocks `LIVEPATCH_SIGNAL` and runs patched code.** `patch()` cannot
+  pause this thread, so the thread can run code while `patch()` writes it.
+- **A hook is new in the patch.** It does not run, so no migration occurs. Declare hooks in
+  the first build.
+
+## Migration hooks
+
+Put a proc pointer in the `lp_pre` or `lp_post` section. The patcher finds it and gives it
+the types whose layout changed.
 
 ```odin
-@(link_section="lp_pre",  export) _pre  := proc(changed: []livepatch.Type_Change) {
-    // runs before the switch, on the old code
+@(link_section=livepatch.HOOK_PRE_SECTION, export)
+_pre := proc(changed: []livepatch.Type_Change) {
+    // old code: copy the old state to storage that you prepared before patch()
 }
-@(link_section="lp_post", export) _post := proc(changed: []livepatch.Type_Change) {
-    // runs after the switch, on the new code: rewrite live instances here
-    for c in changed {
-        // c.name, c.old and c.new are the old/new ^runtime.Type_Info
-    }
+@(link_section=livepatch.HOOK_POST_SECTION, export)
+_post := proc(changed: []livepatch.Type_Change) {
+    // new code: rebuild the state. c.name, c.old, c.new for c in changed
 }
 ```
 
-`@(export)` is required or the pointer is dropped as unreferenced. Hooks added by a patch
-(absent from the first build) do not fire; declare them before the base build.
+`export` is mandatory. Declare the hooks in the first build. A hook that a patch adds does
+not run.
 
-Use hooks as a two-phase migration:
+## Optimizations
 
-1. The pre hook runs old code after other process threads are paused and before
-   publication. It serializes or detaches old-layout objects into application-owned
-   intermediate storage prepared before calling `patch()`.
-2. The post hook runs new code after publication while those threads remain paused. It
-   restores from that storage and publishes the completed new state.
-3. `patch()` resumes the paused threads only after all post hooks complete.
+`-o:none`, `-o:minimal`, and `-o:speed` all work. The example scripts use `-o:none`. Use
+`-o:speed` to patch a realtime program at full speed.
 
-The cache belongs to the application, normally through a stable pointer global whose
-layout does not change. Prepare any allocation-backed cache before calling `patch()`;
-hooks cannot safely allocate it while other threads are paused. Do not put a by-value
-instance of a changing type in the cache; use a stable snapshot format such as IDs,
-primitives, strings with explicit ownership, or versioned serialized data. Stack objects
-cannot be migrated. Existing global storage keeps its original address and layout;
-changing its layout is unsupported, so migrate heap-owned state behind a stable pointer
-instead.
+Inlined code is safe. Each patch rebuilds and redirects every procedure in the program, so
+no caller keeps an old inlined copy.
 
-For a multithreaded application, call `patch()` at a point where workers do not hold any
-resource a hook needs. A single-threaded patch-in-the-main-loop application already has this
-property without additional synchronization.
+Obey these two rules:
+
+- Keep `-use-separate-modules`. It stops inlining across packages.
+- Do not turn on link-time optimization (LTO). It merges the package objects.
+
+Use the same `-o:` level for the exe and the patch. The script does this for you.
+
+In an optimized build, the debugger can show some locals as optimized out.
+
+## Linkers
+
+**Windows exe** (Odin `-linker:` flag):
+
+| Linker | Works |
+| --- | --- |
+| `default` (`radlink`) | Yes |
+| `msvc` (MSVC `link.exe`) | Yes |
+| `lld` | Yes |
+
+Each linker needs `/OPT:NOREF /OPT:NOICF /MAP`. To use radlink, do not set `-linker:`. Odin
+rejects `-linker:radlink` on Windows ("not supported on this platform"), but the default is
+radlink.
+
+`patch()` always links the patch DLL with `lld-link.exe` from the Odin install that built
+the exe. MSVC is not necessary for the patch.
+
+**Linux exe:** any linker that Odin uses works (GNU `ld`, `lld`, `mold`), as a PIE or with
+`-reloc-mode:static`. A stripped exe or a fully static exe (`-static`) does not work.
+
+**Linux patch module:** `patch()` links it with lld, mold, or GNU `ld`. To select one, set
+`-define:LIVEPATCH_LD=<linker>` in the build script, or set the `LIVEPATCH_LD` environment
+variable. The environment variable overrides the define. `patch()` reads it on each patch.
+The value is a name to find on `PATH`, such as `mold` or `ld.lld-18`, or a full path.
+
+Without a value, `patch()` uses the first of `ld.lld`, `mold`, and `ld` that is on `PATH`.
+
+`patch()` runs the linker with `--version` to get its kind and its flags. GNU gold and other
+linkers are not used. If no known linker is found, `patch()` fails with `Load_Failed`.
+
+To add a linker, add its `--version` text and its flags to `LINKER_KINDS` in
+`livepatch/platform_linux.odin`.
+
+## Debugging
+
+Breakpoints, stepping, locals, and call stacks work in the new code.
+
+Debugging works when:
+
+- The build script passes `-debug`, as the example scripts do. Without it, the exe and the
+  patches have no debug info, and no breakpoint binds.
+- A debugger is attached at the time of the patch. `patch()` writes debug info only then.
+- The debugger is VS Code, Visual Studio, RAD Debugger, or WinDbg on Windows. Each patch is
+  a DLL with a PDB, so no setup is necessary.
+- The debugger is gdb or lldb on Linux, with the setup in
+  [Linux debugger setup](#linux-debugger-setup).
+
+Debugging does not work when:
+
+- You attach the debugger after a patch. The patches made before have no debug info. Patch
+  again.
+- You set an lldb breakpoint by name, such as `main::helper`. lldb reads `::` as a C++ scope.
+  Use a file and line, or `breakpoint set -r '^main::helper$'`.
+- On Windows, you set breakpoints on the `proc` line and the first line of a small procedure
+  before the first patch. `patch()` fails with `Breakpoint_In_Redirect`. Remove one of the
+  breakpoints and patch again.
+
+A breakpoint on the `proc` line, set before the first patch, also stops once in the old exe
+copy on each call. The call then continues into the new code.
+
+### Linux debugger setup
+
+Linux cannot suspend a different thread. Thus `patch()` sends signal 62 (`LIVEPATCH_SIGNAL`)
+to each other thread. The signal handler holds the thread until the patch is written.
+
+A debugger gets each signal before the program. gdb stops at this signal by default. Then
+each patch stops in the debugger once for each thread. Tell the debugger to give the signal
+to the program and not to stop. Do not block the signal in the debugger. Without the
+signal, the threads do not pause, and `patch()` fails with `Commit_Failed` after a long wait.
+
+| Debugger | Signal | Breakpoints in a patch |
+| --- | --- | --- |
+| gdb | `handle SIG62 nostop noprint pass` | `set breakpoint pending on` |
+| lldb | `process handle SIG62 --stop false --notify false --pass true` | `settings set plugin.jit-loader.gdb.enable on` |
+
+If you set `-define:LIVEPATCH_SIGNAL=<n>`, use `SIG<n>` in these commands. Windows does not
+use a signal, so no setup is necessary there.
+
+**VS Code**, with the CodeLLDB extension, in `.vscode/launch.json`:
+
+```json
+{
+  "type": "lldb",
+  "request": "launch",
+  "name": "Debug demo (Linux)",
+  "program": "${workspaceFolder}/examples/demo",
+  "cwd": "${workspaceFolder}/examples",
+  "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
+  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+}
+```
+
+**VS Code**, with the C/C++ extension and gdb:
+
+```json
+{
+  "type": "cppdbg",
+  "request": "launch",
+  "name": "Debug demo (Linux, gdb)",
+  "program": "${workspaceFolder}/examples/demo",
+  "cwd": "${workspaceFolder}/examples",
+  "MIMode": "gdb",
+  "setupCommands": [
+    { "text": "handle SIG62 nostop noprint pass" },
+    { "text": "set breakpoint pending on" }
+  ]
+}
+```
+
+**Zed**, in `.zed/debug.json`. Zed uses CodeLLDB, so the commands are the same as for lldb:
+
+```json
+{
+  "label": "Debug demo (Linux)",
+  "adapter": "CodeLLDB",
+  "request": "launch",
+  "program": "$ZED_WORKTREE_ROOT/examples/demo",
+  "cwd": "$ZED_WORKTREE_ROOT/examples",
+  "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
+  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+}
+```

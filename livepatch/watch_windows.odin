@@ -20,10 +20,7 @@ when LIVEPATCH {
 	}
 
 	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
-		root, root_err := watch_root(source_root)
-		if root_err != nil {
-			return {}, root_err
-		}
+		root := watch_root(source_root) or_return
 
 		wroot := win.utf8_to_utf16(root, context.temp_allocator)
 		if wroot == nil {

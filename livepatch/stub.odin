@@ -1,7 +1,6 @@
 package livepatch
 
-// The API when livepatching is off: LIVEPATCH is false, or the target is not Windows x64.
-when !(LIVEPATCH && ODIN_OS == .Windows && ODIN_ARCH == .amd64) {
+when !(LIVEPATCH && SUPPORTED_TARGET) {
 
 	Watcher :: struct {}
 

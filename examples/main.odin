@@ -12,7 +12,8 @@ package livepatch_demo
 // Each DEMO_n constant below turns on one livepatch feature. To enable a feature while the
 // demo runs, set its constant to true and save. See README.md for what each one shows.
 //
-// Build the host with build_livepatch.bat, then run demo.exe.
+// Build the host with build_livepatch.bat (Windows) or build_livepatch.sh (Linux), then run
+// demo.exe or ./demo.
 
 import lp "../livepatch"
 
@@ -33,6 +34,9 @@ DEMO_3 :: false // a @static local: a frame counter that does not reset on a pat
 DEMO_4 :: false // a global that a patch adds: a wind slider
 DEMO_5 :: false // a procedure that a patch adds: a background grid
 DEMO_6 :: false // a build error: the error shows on screen, and the old code keeps running
+
+// The script that builds this demo, and that patch_start runs to rebuild it
+BUILD_SCRIPT :: "build_livepatch.bat" when ODIN_OS == .Windows else "build_livepatch.sh"
 
 WIDTH   :: 900
 HEIGHT  :: 600
@@ -85,7 +89,7 @@ when DEMO_4 {
 }
 
 main :: proc() {
-	rl.InitWindow(WIDTH, HEIGHT, "Odin livepatch demo edit frame(), press F5 or save")
+	rl.InitWindow(WIDTH, HEIGHT, "Odin livepatch demo: edit frame(), press F5 or save")
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(60)
 
@@ -128,7 +132,7 @@ main :: proc() {
 		// keeps running. (lp.patch() does the same in one call, but the window freezes
 		// for the whole build.)
 		if do_patch {
-			if _, busy := lp.patch_start("build_livepatch.bat").(lp.Patch_In_Progress); busy {
+			if _, busy := lp.patch_start(BUILD_SCRIPT).(lp.Patch_In_Progress); busy {
 				patch_again = true
 			}
 		}
@@ -136,7 +140,7 @@ main :: proc() {
 			after_patch(err)
 			if patch_again {
 				patch_again = false
-				lp.patch_start("build_livepatch.bat")
+				lp.patch_start(BUILD_SCRIPT)
 			}
 		}
 
@@ -353,7 +357,7 @@ load_image_texture :: proc(png_bytes: []u8) -> rl.Texture2D {
 // A post-patch hook. livepatch finds it by the link section (no registration call) and
 // runs it right after each patch is applied, while the other threads are paused. The hook
 // runs the new code, so it sees the new image bytes and the new State type.
-@(link_section = "lp_post", export)
+@(link_section = lp.HOOK_POST_SECTION, export)
 _on_patched := proc(changed: []lp.Type_Change) {
 	// `changed` lists only the types in the type table, and a type is in the table only
 	// when the program uses its type info. This line puts State (and Ball) in the table.

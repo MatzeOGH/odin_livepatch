@@ -1,4 +1,4 @@
-#+build windows amd64
+#+build windows amd64, linux amd64
 package livepatch
 
 import "core:fmt"
@@ -6,27 +6,26 @@ import "core:path/filepath"
 import "core:strings"
 
 Redirect :: struct {
-	exe_address: rawptr,
-	body:        rawptr,
-	name:        string,
-}
-
-Slot_Target :: struct {
-	slot: rawptr,
+	from: rawptr, // the exe entry redirects or the slot targets
 	body: rawptr,
 	name: string,
 }
+
+// The GDB JIT interface hook (platform_linux.odin)
+JIT_REGISTER_NAME :: "__jit_debug_register_code"
 
 Merged :: struct {
 	defs:           map[string]rawptr, // defined link name -> live address that references use
 	defined:        map[string]bool,   // external names that a patch object defines
 	externals:      map[string]rawptr, // undefined name that no object defines -> exe address
 	aliases:        map[string]string, // retargeted link name -> its `lp$N` alias
+	call_aliases:   map[string]string, // procedure link name -> its `lp$cN` alias, for direct calls
 	redirects:      [dynamic]Redirect,
-	slot_targets:   [dynamic]Slot_Target,
-	new_globals:    [dynamic]string, // writable data that this patch adds
-	has_type_table: bool,
-	type_table_new: rawptr, // the new build's runtime.type_table slice header, in the patch module
+	slot_targets:   [dynamic]Redirect,
+	new_globals:    map[string]int, // writable data that this patch adds -> its size, where the object has sizes
+	grew:           Global_Grew,    // the first data that is larger than the storage it binds to
+	keys:           Static_Keys,    // stable keys of the statics in the patch objects
+	type_table_new: rawptr,         // the new build's runtime.type_table slice header, in the patch module
 }
 
 merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
@@ -34,14 +33,24 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.defined = make(map[string]bool, allocator)
 	merged.externals = make(map[string]rawptr, allocator)
 	merged.aliases = make(map[string]string, allocator)
+	merged.call_aliases = make(map[string]string, allocator)
 	merged.redirects = make([dynamic]Redirect, allocator)
-	merged.slot_targets = make([dynamic]Slot_Target, allocator)
-	merged.new_globals = make([dynamic]string, allocator)
+	merged.slot_targets = make([dynamic]Redirect, allocator)
+	merged.new_globals = make(map[string]int, allocator)
 	seen := make(map[string]bool, allocator)
 
-	for &o in objects {
+	names := make([dynamic]string, context.temp_allocator)
+	for &object in objects {
 		cursor := 0
-		for symbol in object_symbols(&o, &cursor) {
+		for symbol in next_object_symbol(&object, &cursor) {
+			append(&names, symbol.name)
+		}
+	}
+	merged.keys = static_keys_make(names[:], allocator)
+
+	for &object in objects {
+		cursor := 0
+		for symbol in next_object_symbol(&object, &cursor) {
 			name := symbol.name
 			if symbol.provides {
 				merged.defined[name] = true
@@ -54,15 +63,11 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 			}
 			seen[name] = true
 
-			if name == "runtime::type_table" {
-				merged.has_type_table = true
-			}
-
 			#partial switch symbol.kind {
 			case .Code:
-				// Never redirect the patcher while it runs.
-				if strings.has_prefix(name, "livepatch::") {
-					if exe_address, found := exe_symbol(name); found {
+				// Never redirect the patcher while it runs its procedures and its proc literals, nor the JIT interface hook
+				if strings.has_prefix(name, "livepatch::") || strings.contains(name, ANON + "livepatch:") || name == JIT_REGISTER_NAME {
+					if exe_address, found := exe_symbol_address(name, merged.keys); found {
 						merged.defs[name] = exe_address
 					}
 					continue
@@ -71,24 +76,38 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 				if symbol.local {
 					continue
 				}
-				// A redirect needs 5 bytes for the jmp. Else the procedure gets a slot.
-				if exe_address, found := exe_symbol(name); found && exe_room(exe_address) >= 5 {
+				// A redirect needs REDIRECT_SIZE bytes for the jump, in code
+				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_holds_code(uintptr(exe_address)) && exe_room(exe_address) >= REDIRECT_SIZE {
 					merged.defs[name] = exe_address
 					append(&merged.redirects, Redirect{exe_address, nil, name})
-				} else if slot := slot_for(name); slot != nil {
+				} else if slot := slot_for(data_key(merged.keys, name)); slot != nil {
 					merged.defs[name] = slot
-					append(&merged.slot_targets, Slot_Target{slot, nil, name})
+					append(&merged.slot_targets, Redirect{slot, nil, name})
 				}
 			case .Data:
-				if symbol.local && !strings.contains(name, "::") {
+				// A static of a top-level proc literal has no package prefix
+				if symbol.local && !strings.contains(name, "::") && !strings.contains(name, ANON) {
 					continue
 				}
-				if exe_address, found := exe_symbol(name); found {
-					merged.defs[name] = exe_address
-				} else if live, ok := global_store[canonical_data_name(name)]; ok {
-					merged.defs[name] = live
-				} else {
-					append(&merged.new_globals, name)
+				// The data of a constant, such as a slice literal or `&T{}`
+				if strings.has_prefix(name, "csba$") || strings.has_prefix(name, "ggv$") {
+					continue
+				}
+				// Data that was `@(rodata)` in the exe gets storage of its own: the exe copy is read-only
+				storage: rawptr
+				if exe_address, found := exe_symbol_address(name, merged.keys); found && exe_holds_variable(uintptr(exe_address)) {
+					storage = exe_address
+				} else if stored, in_store := global_store[data_key(merged.keys, name)]; in_store {
+					storage = stored
+				}
+				if storage == nil {
+					merged.new_globals[name] = symbol.size
+					continue
+				}
+				merged.defs[name] = storage
+				// Larger data would write past its storage, into the next variable
+				if known := variable_sizes[uintptr(storage)]; known > 0 && symbol.size > known && merged.grew.name == "" {
+					merged.grew = {name, known, symbol.size}
 				}
 			}
 		}
@@ -98,9 +117,11 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 
 // Binds each external that no patch object defines
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
-	for &o in objects {
+	near_refs: Near_References
+	have_near_refs := false
+	for &object in objects {
 		cursor := 0
-		for symbol in object_symbols(&o, &cursor) {
+		for symbol in next_object_symbol(&object, &cursor) {
 			if symbol.kind != .Undefined {
 				continue
 			}
@@ -108,20 +129,25 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 			if name in merged.defs || name in merged.defined || name in merged.externals {
 				continue
 			}
-			addr, found := exe_symbol(name)
+			addr, found := exe_symbol_address(name, merged.keys)
 			if !found {
 				addr, found = loaded_export(name)
 			}
 			if !found {
-				return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+				return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 			}
 			if !is_near(uintptr(addr)) {
-				slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
-				if slot == nil {
-					return Unresolved_Symbol{error_text(name), error_text(filepath.base(o.path))}
+				if !have_near_refs {
+					near_refs, have_near_refs = find_near_references(objects), true
 				}
-				write_tramp_target(slot, addr)
-				addr = slot
+				if needs_near_address(&near_refs, name) {
+					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
+					if slot == nil {
+						return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
+					}
+					write_tramp_target(slot, addr)
+					addr = slot
+				}
 			}
 			merged.externals[name] = addr
 		}
@@ -129,16 +155,12 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	return nil
 }
 
-is_near :: proc(addr: uintptr) -> bool {
-	LIMIT :: uintptr(0x4000_0000) // 1GB, plus NEAR_WINDOW stays under 2GB
-	return abs(int(addr) - int(exe_base())) < int(LIMIT)
-}
-
-alias_for :: proc(merged: ^Merged, name: string) -> string {
-	if a, ok := merged.aliases[name]; ok {
-		return a
+// The alias `<prefix>N` of a name. The first use makes it.
+alias_in :: proc(aliases: ^map[string]string, prefix, name: string) -> string {
+	if alias, found := aliases[name]; found {
+		return alias
 	}
-	a := fmt.tprintf("lp$%d", len(merged.aliases))
-	merged.aliases[name] = a
-	return a
+	alias := fmt.tprintf("%s%d", prefix, len(aliases))
+	aliases[name] = alias
+	return alias
 }
