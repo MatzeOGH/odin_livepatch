@@ -159,14 +159,14 @@ exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, o
 
 make_exe_writable :: proc() -> Error {
 	if system_page_size := posix.sysconf(._PAGESIZE); int(system_page_size) != int(PAGE_SIZE) {
-		return Commit_Failed{os_error = os.Platform_Error(linux.Errno.EINVAL)} // see "Page size" in the README
+		return Commit_Failed{os_error = os.Platform_Error(linux.Errno.EINVAL)}
 	}
 	for &segment in exe_view.segments {
 		if segment.type == PT_LOAD && segment.flags & PF_X != 0 {
 			page_start := mem.align_backward_uintptr(exe_bias + uintptr(segment.vaddr), PAGE_SIZE)
 			page_end := mem.align_forward_uintptr(exe_bias + uintptr(segment.vaddr + segment.memsz), PAGE_SIZE)
 			if protect_err := linux.mprotect(rawptr(page_start), uint(page_end - page_start), {.READ, .WRITE, .EXEC}); protect_err != .NONE {
-				return Commit_Failed{os_error = os.Platform_Error(protect_err)} // see "Hardened kernels" in the README
+				return Commit_Failed{os_error = os.Platform_Error(protect_err)}
 			}
 		}
 	}
@@ -494,6 +494,101 @@ build_command :: proc(script, output_dir: string) -> []string {
 	return slice.clone([]string{"/bin/sh", script, output_dir}, context.temp_allocator)
 }
 
+// The linker of the patch module: a name to find on PATH, or a path. The environment
+// variable LIVEPATCH_LD overrides it. Empty: the first of LINKER_SEARCH that is on PATH.
+LIVEPATCH_LD :: #config(LIVEPATCH_LD, "")
+
+LINKER_SEARCH :: [?]string{"ld.lld", "mold", "ld"}
+
+// The linker kinds that patch() knows, with their flags. %x is the base address of the patch
+// module. The first kind whose text is in the first line of `--version` is used. mold prints
+// "compatible with GNU ld", so it comes before GNU ld.
+Linker_Kind :: struct {
+	version, flags: string,
+}
+
+LLD_FLAGS :: "-static -nostdlib --no-dynamic-linker -e 0 --image-base=0x%x\n" +
+	"-z norelro -z separate-loadable-segments -z max-page-size=4096 -z noexecstack\n" +
+	"--build-id=none --no-gc-sections --icf=none\n"
+
+GNU_LD_FLAGS :: "-static -nostdlib -e 0 -Ttext-segment=0x%x\n" +
+	"-z norelro -z separate-code -z max-page-size=4096 -z noexecstack\n" +
+	"--build-id=none --no-gc-sections --no-relax\n"
+
+LINKER_KINDS :: [?]Linker_Kind{
+	{"LLD", LLD_FLAGS},
+	{"mold", LLD_FLAGS},
+	{"GNU ld", GNU_LD_FLAGS},
+}
+
+run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string, base: uintptr) -> Error {
+	linker_path, flags, found := find_linker()
+	if !found {
+		return Load_Failed{kind = .Cannot_Run_Linker, output = error_text(
+			"no known linker found: install lld, mold or GNU ld, or set LIVEPATCH_LD")}
+	}
+	elf_path := strings.concatenate({stem, ".elf"}, context.temp_allocator)
+
+	response := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&response, flags, base)
+	if !debugger_attached() {
+		fmt.sbprintf(&response, "--strip-debug\n")
+	}
+	fmt.sbprintf(&response, "-o \"%s\"\n\"%s\"\n", elf_path, absolute_object_path)
+	for &object in objects {
+		fmt.sbprintf(&response, "\"%s\"\n", object.path)
+	}
+	response_path := strings.concatenate({stem, ".rsp"}, context.temp_allocator)
+	if write_err := os.write_entire_file(response_path, transmute([]u8)strings.to_string(response)); write_err != nil {
+		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
+	}
+
+	process_desc := os.Process_Desc{command = []string{linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)}}
+	state, stdout, stderr, exec_err := os.process_exec(process_desc, context.temp_allocator)
+	if exec_err != nil {
+		return Load_Failed{kind = .Cannot_Run_Linker, os_error = exec_err}
+	}
+	if state.exit_code != 0 {
+		return Load_Failed{kind = .Link_Failed, output = error_text(len(stderr) > 0 ? string(stderr) : string(stdout))}
+	}
+	return nil
+}
+
+// The linker to use and its flags
+find_linker :: proc() -> (path, flags: string, ok: bool) {
+	choice := os.lookup_env("LIVEPATCH_LD", context.temp_allocator) or_else LIVEPATCH_LD
+	search := LINKER_SEARCH
+	names := []string{choice} if choice != "" else search[:]
+	for name in names {
+		path = name if strings.contains(name, "/") else on_path(name) or_continue
+		process_desc := os.Process_Desc{command = []string{path, "--version"}}
+		_, stdout, _, exec_err := os.process_exec(process_desc, context.temp_allocator)
+		if exec_err != nil {
+			continue
+		}
+		first_line, _, _ := strings.partition(string(stdout), "\n")
+		for kind in LINKER_KINDS {
+			if strings.contains(first_line, kind.version) {
+				return path, kind.flags, true
+			}
+		}
+	}
+	return
+}
+
+on_path :: proc(name: string) -> (path: string, ok: bool) {
+	rest, _ := os.lookup_env("PATH", context.temp_allocator)
+	for dir in strings.split_iterator(&rest, ":") {
+		if dir == "" {
+			continue
+		}
+		candidate, _ := filepath.join({dir, name}, context.temp_allocator)
+		if os.exists(candidate) {
+			return candidate, true
+		}
+	}
+	return
+}
 when LIVEPATCH {
 
 	Jit_Code_Entry :: struct {
