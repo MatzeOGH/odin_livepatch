@@ -709,3 +709,16 @@ when LIVEPATCH {
 	register_with_debugger :: proc(symfile: []byte) {}
 
 }
+
+when LIVEPATCH {
+
+	// Shows a desktop notification, if notify-send is installed
+	show_toast :: proc(total: time.Duration) {
+		when LIVEPATCH_TOAST {
+			message := fmt.tprintf("Patch applied in %.0f ms", time.duration_milliseconds(total))
+			process_desc := os.Process_Desc{command = []string{"notify-send", "--app-name=livepatch", "livepatch", message}}
+			_, _, _, _ = os.process_exec(process_desc, context.temp_allocator)
+		}
+	}
+
+}

@@ -11,6 +11,8 @@ examples/livepatch/
 livepatch_mod/
 *.map
 *.rdi
+# The import library that radlink writes for an exe with exports
+*.lib
 
 # The test apps and their patch output
 tests/*/app
