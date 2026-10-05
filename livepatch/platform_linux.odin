@@ -589,6 +589,84 @@ on_path :: proc(name: string) -> (path: string, ok: bool) {
 	}
 	return
 }
+
+load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object) -> (module: Patch_Module, err: Error) {
+	elf_path := strings.concatenate({stem, ".elf"}, context.temp_allocator)
+	attached := debugger_attached()
+	allocator := attached ? context.allocator : context.temp_allocator
+	data, read_err := os.read_entire_file_from_path(elf_path, allocator)
+	if read_err != nil {
+		return {}, Load_Failed{kind = .Load_Library_Failed, os_error = read_err}
+	}
+	defer if err != nil {
+		delete(data, allocator)
+	}
+	view, ok := parse_elf(data)
+	if !ok || view.header.type != ET_EXEC {
+		return {}, Load_Failed{kind = .Load_Library_Failed}
+	}
+
+	start, end := max(uintptr), uintptr(0)
+	for &segment in view.segments {
+		if segment.type == PT_LOAD {
+			start = min(start, mem.align_backward_uintptr(uintptr(segment.vaddr), PAGE_SIZE))
+			end = max(end, mem.align_forward_uintptr(uintptr(segment.vaddr + segment.memsz), PAGE_SIZE))
+		}
+	}
+	if start != base || end <= start {
+		return {}, Load_Failed{kind = .Wrong_Load_Base}
+	}
+	mapping, map_err := linux.mmap(start, uint(end - start), {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS, .FIXED_NOREPLACE})
+	if map_err != .NONE || uintptr(mapping) != start {
+		if map_err == .NONE {
+			linux.munmap(mapping, uint(end - start))
+		}
+		return {}, Load_Failed{kind = .Wrong_Load_Base, os_error = os.Platform_Error(map_err)}
+	}
+	for &segment in view.segments {
+		if segment.type == PT_LOAD && segment.filesz > 0 {
+			if int(segment.offset + segment.filesz) > len(data) || segment.filesz > segment.memsz {
+				linux.munmap(mapping, uint(end - start))
+				return {}, Load_Failed{kind = .Load_Library_Failed}
+			}
+			copy(([^]u8)(rawptr(uintptr(segment.vaddr)))[:segment.filesz], data[segment.offset:][:segment.filesz])
+		}
+	}
+
+	page_protection :: proc(view: ^Elf_View, page: uintptr) -> (protection: linux.Mem_Protection) {
+		for &segment in view.segments {
+			segment_start := uintptr(segment.vaddr)
+			segment_end := uintptr(segment.vaddr + segment.memsz)
+			if segment.type != PT_LOAD || segment_end <= page || segment_start >= page + PAGE_SIZE {
+				continue
+			}
+			if segment.flags & PF_R != 0 { protection += {.READ} }
+			if segment.flags & PF_W != 0 { protection += {.WRITE} }
+			if segment.flags & PF_X != 0 { protection += {.EXEC} }
+		}
+		return
+	}
+
+	run_start := start
+	run_protection := page_protection(&view, start)
+	for page := start + PAGE_SIZE; ; page += PAGE_SIZE {
+		protection := page_protection(&view, page) if page < end else {}
+		if page < end && protection == run_protection {
+			continue
+		}
+		linux.mprotect(rawptr(run_start), uint(page - run_start), run_protection)
+		if page >= end {
+			break
+		}
+		run_start, run_protection = page, protection
+	}
+
+	if attached {
+		register_with_debugger(data)
+	}
+	return read_elf_symbols(&view, 0, context.temp_allocator, stable_keys = false).symbols, nil
+}
+
 when LIVEPATCH {
 
 	Jit_Code_Entry :: struct {
