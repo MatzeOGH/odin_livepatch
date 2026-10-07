@@ -1,7 +1,7 @@
 package main
 
 // Two local types named Local in two procedures. v3 changes the second. The post hook must see
-// only that one, also when v3 adds a third Local.
+// only that one, also when v3 adds a third Local in extra.odin.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -37,10 +37,6 @@ when VERSION < 3 {
 	size_b :: proc() -> int {
 		Local :: struct { x, y, z: f64 }
 		return type_info_of(Local).size + size_c() - size_c()
-	}
-	size_c :: proc() -> int {
-		Local :: struct { c: [3]f64 }
-		return type_info_of(Local).size
 	}
 }
 
