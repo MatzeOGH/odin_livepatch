@@ -28,6 +28,7 @@ foreign ntdll {
 }
 
 CONTEXT_CONTROL :: 0x0010_0001
+STILL_ACTIVE    :: 259 // GetExitCodeThread
 ODIN_EXE_NAME :: "odin.exe"
 
 exe_base :: proc "contextless" () -> uintptr {
@@ -246,8 +247,15 @@ ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
 	for thread in handles {
 		thread_context: win.CONTEXT
 		thread_context.ContextFlags = CONTEXT_CONTROL
-		// An unknown RIP can be in a site
-		if !win.GetThreadContext(thread, &thread_context) || in_unwritten_site(uintptr(thread_context.Rip), unwritten) {
+		if !win.GetThreadContext(thread, &thread_context) {
+			// A thread that exited stays in the list while a handle to it is open. It runs no code.
+			exit_code: win.DWORD
+			if win.GetExitCodeThread(thread, &exit_code) && exit_code != STILL_ACTIVE {
+				continue
+			}
+			return true // an unknown RIP can be in a site
+		}
+		if in_unwritten_site(uintptr(thread_context.Rip), unwritten) {
 			return true
 		}
 	}
