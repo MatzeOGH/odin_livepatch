@@ -1,22 +1,49 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A thread that is in an old body during a patch finishes that body. Its next call runs the new one.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
+import "core:sync"
+import "core:thread"
+import "core:time"
 
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
+entered, release: bool
+
+// Runs until released
+long_running :: proc() -> int {
+	sync.atomic_store(&entered, true)
+	for !sync.atomic_load(&release) {
+		time.sleep(time.Millisecond)
+	}
 	return VERSION
 }
 
-setup :: proc() {}
+inflight: ^thread.Thread
+inflight_result: int
+
+setup :: proc() {
+	inflight = thread.create_and_start(proc() {
+		sync.atomic_store(&inflight_result, long_running())
+	})
+	for !sync.atomic_load(&entered) {
+		time.sleep(time.Millisecond)
+	}
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	if v == 2 {
+		sync.atomic_store(&release, true)
+		thread.join(inflight)
+		check("the thread finished the v1 body", sync.atomic_load(&inflight_result), 1)
+	}
+	if v >= 2 {
+		check("a new call runs the new body", long_running(), v)
+	}
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

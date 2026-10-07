@@ -1,22 +1,48 @@
 package main
 
-// A procedure gets a new body in each patch.
+// v3 has the same code as v2. The patch works, the statics keep their values, and the hook sees no change.
 
+import "base:runtime"
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 3
+LAST_VERSION :: 4
 
-value :: proc() -> int {
-	return VERSION
+// v3 is the same as v2, v4 is new again
+CODE :: 2 when VERSION == 3 else VERSION
+
+when CODE == 1 {
+	Thing :: struct { a: int }
+} else {
+	Thing :: struct { a, b: int }
+}
+
+changes: int
+
+@(link_section=lp.HOOK_POST_SECTION, export) _post := proc(changed: []lp.Type_Change) {
+	changes += len(changed)
+}
+
+count :: proc() -> int {
+	@(static) n: int
+	n += 1
+	return n + CODE * 100 + 0 * size_of(Thing)
+}
+
+// The type table has only the types whose type info the code uses. The hook sees changes only there.
+thing_info :: proc() -> ^runtime.Type_Info {
+	return type_info_of(Thing)
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	code := v == 3 ? 2 : v
+	_ = thing_info()
+	check("@static kept", count(), v + code * 100)
+	check("type changes seen by the hook", changes, v == 1 ? 0 : 1)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

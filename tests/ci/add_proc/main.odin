@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A patch adds a procedure, and the next patch changes it.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,8 +9,17 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+when VERSION == 1 {
+	value :: proc() -> int {
+		return 1
+	}
+} else {
+	helper :: proc() -> int {
+		return VERSION
+	}
+	value :: proc() -> int {
+		return helper()
+	}
 }
 
 setup :: proc() {}

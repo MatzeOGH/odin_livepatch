@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A @static local keeps its value, and the new code writes it.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +9,16 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+bump :: proc() -> int {
+	@(static) counter: int
+	counter += VERSION
+	return counter
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("@static: 1 + .. + v", bump(), v * (v + 1) / 2)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

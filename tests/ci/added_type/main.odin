@@ -1,22 +1,47 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A type that only patches have: v2 adds it, v3 makes it larger, v4 smaller again. The post
+// hook sees only the changes of v3 and v4: a new type is not a change.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 3
+LAST_VERSION :: 4
 
-value :: proc() -> int {
-	return VERSION
+thing_changes: int
+
+@(link_section=lp.HOOK_POST_SECTION, export) _post := proc(changed: []lp.Type_Change) {
+	for change in changed {
+		if change.name == "Thing" {
+			thing_changes += 1
+		}
+	}
+}
+
+when VERSION == 1 {
+	thing_size :: proc() -> int {
+		return 0
+	}
+} else {
+	when VERSION == 3 {
+		Thing :: struct { a, b: int }
+	} else {
+		Thing :: struct { a: int }
+	}
+	thing_size :: proc() -> int {
+		return size_of(Thing) + 0 * len(fmt.tprint(Thing{}))
+	}
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	sizes := [?]int{0, 8, 16, 8}
+	changes := [?]int{0, 0, 1, 2}
+	check("size of Thing", thing_size(), sizes[v - 1])
+	check("hook saw Thing change", thing_changes, changes[v - 1])
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

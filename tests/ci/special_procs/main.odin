@@ -1,6 +1,7 @@
 package main
 
-// A procedure gets a new body in each patch.
+// Stored pointers to procedures with special names or calling conventions get the new body:
+// @(export), @(link_name), contextless, and @(private = "file").
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +10,28 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+@(export) exported :: proc "c" () -> i32 { return VERSION * 1000 }
+@(link_name = "my_linked") linked :: proc() -> int { return VERSION * 1000 }
+contextless_proc :: proc "contextless" () -> int { return VERSION * 1000 }
+@(private = "file") file_private :: proc() -> int { return VERSION * 1000 }
+
+exported_ptr: proc "c" () -> i32
+linked_ptr: proc() -> int
+contextless_ptr: proc "contextless" () -> int
+file_private_ptr: proc() -> int
+
+setup :: proc() {
+	exported_ptr = exported
+	linked_ptr = linked
+	contextless_ptr = contextless_proc
+	file_private_ptr = file_private
 }
 
-setup :: proc() {}
-
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("@(export)", int(exported_ptr()), v * 1000)
+	check("@(link_name)", linked_ptr(), v * 1000)
+	check("contextless", contextless_ptr(), v * 1000)
+	check("@(private = \"file\")", file_private_ptr(), v * 1000)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

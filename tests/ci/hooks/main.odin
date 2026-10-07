@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// The pre and post hooks of the exe run one time for each patch.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -8,6 +8,16 @@ import "core:os"
 
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
+
+pre_calls, post_calls: int
+
+@(link_section=lp.HOOK_PRE_SECTION, export) _pre := proc(changed: []lp.Type_Change) {
+	pre_calls += 1
+}
+
+@(link_section=lp.HOOK_POST_SECTION, export) _post := proc(changed: []lp.Type_Change) {
+	post_calls += 1
+}
 
 value :: proc() -> int {
 	return VERSION
@@ -17,6 +27,8 @@ setup :: proc() {}
 
 checks :: proc(v: int) {
 	check("value", value(), v)
+	check("pre hook calls", pre_calls, v - 1)
+	check("post hook calls", post_calls, v - 1)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

@@ -1,7 +1,8 @@
 package main
 
-// A procedure gets a new body in each patch.
+// @static locals that the code writes with immediate operands keep their values.
 
+import "base:intrinsics"
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
@@ -9,14 +10,22 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+poke :: proc() -> int {
+	@(static) wide:  i64
+	@(static) count: i64
+	@(static) fixed: i32
+	@(static) small: i8
+	intrinsics.atomic_add(&count, 1) // lock xadd [rip+count]
+	fixed = 5                        // mov dword [rip+fixed], imm32
+	small = 1                        // mov byte [rip+small], imm8
+	wide = 0                         // mov qword [rip+wide], imm32
+	return int(count) + int(fixed) + int(small) + int(wide) + VERSION * 100
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("statics", poke(), v + 5 + 1 + v * 100)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// Polymorphic procedures: an instance that the exe has gets the new body, and a patch adds a new instance.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +9,17 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+scale :: proc(x: $T) -> T {
+	return x * T(VERSION)
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("instance of the exe", scale(1.5), 1.5 * f64(v))
+	when VERSION >= 2 {
+		check("instance that a patch adds", scale(21), 21 * v)
+	}
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

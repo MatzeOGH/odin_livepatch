@@ -1,22 +1,33 @@
 package main
 
-// A procedure gets a new body in each patch.
+// With LIVEPATCH=false (build.bat sets it), the API compiles and does nothing: patch() returns
+// nil, the old code keeps running, and the watcher reports no change.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 3
 
 value :: proc() -> int {
 	return VERSION
 }
 
-setup :: proc() {}
-
-checks :: proc(v: int) {
-	check("value", value(), v)
+main :: proc() {
+	check("LIVEPATCH", lp.LIVEPATCH, false)
+	for v in 2 ..= 3 {
+		check("patch", patch_to(v), nil)
+		check("value: still v1", value(), 1)
+	}
+	check("patch_start", lp.patch_start("build.bat"), nil)
+	finished, err := lp.patch_poll()
+	check("patch_poll: nothing", finished || err != nil, false)
+	w, werr := lp.watch_start(".")
+	check("watch_start", werr, nil)
+	changed, cerr := lp.watch_poll(&w)
+	check("watch_poll: nothing", changed || cerr != nil, false)
+	lp.watch_stop(&w)
+	os.exit(failures == 0 ? 0 : 1)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
@@ -36,18 +47,4 @@ patch_to :: proc(v: int) -> lp.Error {
 	fmt.printfln("v%d", v)
 	os.set_env("VERSION", fmt.tprint(v))
 	return lp.patch("build.bat")
-}
-
-// main stays in its v1 body through all patches, so it does no checks itself. At -o:speed,
-// LLVM can fold a result of v1 code into it. checks() is a new call after each patch.
-@(optimization_mode="none")
-main :: proc() {
-	fmt.println("v1")
-	setup()
-	checks(1)
-	for v in 2 ..= LAST_VERSION {
-		check("patch", patch_to(v), nil)
-		checks(v)
-	}
-	os.exit(failures == 0 ? 0 : 1)
 }

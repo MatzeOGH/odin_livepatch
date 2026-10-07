@@ -1,22 +1,39 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A version that does not compile is rejected. The old code keeps running, and the next patch works.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+when VERSION == 3 {
+	value :: proc() -> int {
+		return "not an int"
+	}
+} else {
+	value :: proc() -> int {
+		return VERSION
+	}
 }
-
-setup :: proc() {}
 
 checks :: proc(v: int) {
 	check("value", value(), v)
+}
+
+@(optimization_mode="none")
+main :: proc() {
+	fmt.println("v1")
+	checks(1)
+	check("patch", patch_to(2), nil)
+	checks(2)
+	_, rejected := patch_to(3).(lp.Build_Failed)
+	check("rejected: Build_Failed", rejected, true)
+	checks(2)
+	check("patch", patch_to(4), nil)
+	checks(4)
+	os.exit(failures == 0 ? 0 : 1)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
@@ -36,18 +53,4 @@ patch_to :: proc(v: int) -> lp.Error {
 	fmt.printfln("v%d", v)
 	os.set_env("VERSION", fmt.tprint(v))
 	return lp.patch("build.bat")
-}
-
-// main stays in its v1 body through all patches, so it does no checks itself. At -o:speed,
-// LLVM can fold a result of v1 code into it. checks() is a new call after each patch.
-@(optimization_mode="none")
-main :: proc() {
-	fmt.println("v1")
-	setup()
-	checks(1)
-	for v in 2 ..= LAST_VERSION {
-		check("patch", patch_to(v), nil)
-		checks(v)
-	}
-	os.exit(failures == 0 ? 0 : 1)
 }

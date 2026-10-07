@@ -1,22 +1,46 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A thread calls the patched code in a loop during each patch, and gets the new body.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
+import "core:sync"
+import "core:thread"
+import "core:time"
 
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
+// zero is a global, so that -o:speed cannot fold the result of value into the worker loop,
+// which runs through the patches
+zero: int
+
 value :: proc() -> int {
-	return VERSION
+	return zero + VERSION
 }
 
-setup :: proc() {}
+seen, calls: int
+
+// It runs through the patches. At -o:speed, code inlined into it would never see a patch.
+@(optimization_mode="none")
+worker :: proc() {
+	for {
+		sync.atomic_store(&seen, value())
+		sync.atomic_add(&calls, 1)
+	}
+}
+
+setup :: proc() {
+	thread.create_and_start(worker)
+	time.sleep(20 * time.Millisecond)
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	before := sync.atomic_load(&calls)
+	time.sleep(20 * time.Millisecond)
+	check("worker runs", sync.atomic_load(&calls) > before, true)
+	check("worker sees the new body", sync.atomic_load(&seen), v)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

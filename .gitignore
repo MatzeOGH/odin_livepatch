@@ -21,3 +21,4 @@ tests/run.log
 tests/*/lldb.log
 tests/*/gdb.log
 tests/ci/*/livepatch/
+tests/ci/*/watched/

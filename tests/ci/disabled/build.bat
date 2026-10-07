@@ -5,7 +5,8 @@ rem LIVEPATCH=false builds the exe with livepatch off (default: true).
 if not defined ODIN set ODIN=odin
 if not defined OPT set OPT=none
 if not defined VERSION set VERSION=1
-if not defined LIVEPATCH set LIVEPATCH=true
+rem This test checks the API with livepatch off
+set LIVEPATCH=false
 rem The exe always needs -debug: patch() reads the address of each symbol from its PDB.
 set DEBUG=-debug
 if not "%~1"=="" if "%LIVEPATCH_DEBUGGER%"=="0" set DEBUG=

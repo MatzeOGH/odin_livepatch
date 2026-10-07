@@ -1,6 +1,7 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A procedure has two proc literals, which the exe stored. v3 removes the first: the pointer
+// to the first must not go to the body of the second.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +10,30 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+when VERSION < 3 {
+	literal_pair :: proc() -> (proc() -> int, proc() -> int) {
+		return proc() -> int { return VERSION * 1000 + 1 }, proc() -> int { return VERSION * 1000 + 2 }
+	}
+} else {
+	literal_pair :: proc() -> (proc() -> int, proc() -> int) {
+		b := proc() -> int { return VERSION * 1000 + 2 }
+		return b, b
+	}
 }
 
-setup :: proc() {}
+first, second: proc() -> int
+
+setup :: proc() {
+	first, second = literal_pair()
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	// v3 has no first literal: both stored pointers keep the bodies of v2
+	old := v == 3 ? 2 : v
+	check("stored first", first(), old * 1000 + 1)
+	check("stored second", second(), old * 1000 + 2)
+	new_first, _ := literal_pair()
+	check("new first", new_first(), v * 1000 + (v == 3 ? 2 : 1))
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A patched procedure that switches on a union.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +9,30 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+Value :: union {
+	int,
+	string,
+	f64,
+}
+
+describe :: proc(v: Value) -> string {
+	switch x in v {
+	case int:
+		return fmt.tprintf("v%d int %d", VERSION, x)
+	case string:
+		return fmt.tprintf("v%d string %s", VERSION, x)
+	case f64:
+		return fmt.tprintf("v%d f64 %.1f", VERSION, x)
+	}
+	return "nil"
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("int", describe(42), fmt.tprintf("v%d int 42", v))
+	check("string", describe("x"), fmt.tprintf("v%d string x", v))
+	check("f64", describe(2.5), fmt.tprintf("v%d f64 2.5", v))
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

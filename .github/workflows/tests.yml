@@ -7,9 +7,15 @@ on:
 
 jobs:
   windows:
-    name: Windows x64
+    name: Windows x64 -o:${{ matrix.opt }}
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each -o: level reports on its own
+      matrix:
+        opt: [none, speed]
+    env:
+      OPT: ${{ matrix.opt }}
     steps:
       - uses: actions/checkout@v4
 

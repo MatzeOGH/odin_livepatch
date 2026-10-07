@@ -1,22 +1,42 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A procedure that only patches have: v2 adds it, v3 changes it, v4 removes it, v5 adds it again.
+// A pointer to it that the code stored gets each new body, and keeps the last one while it is removed.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 3
+LAST_VERSION :: 5
 
-value :: proc() -> int {
-	return VERSION
+HAS_ADDED :: VERSION == 2 || VERSION == 3 || VERSION == 5
+
+stored: proc() -> int
+
+when HAS_ADDED {
+	added :: proc() -> int {
+		return VERSION * 10
+	}
+	call_added :: proc() -> int {
+		stored = added
+		return added()
+	}
+} else {
+	call_added :: proc() -> int {
+		return -1
+	}
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	has := v == 2 || v == 3 || v == 5
+	check("added proc", call_added(), has ? v * 10 : -1)
+	if v >= 2 {
+		// v4 removes it: the pointer keeps the body of v3
+		check("stored pointer", stored(), v == 4 ? 30 : v * 10)
+	}
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

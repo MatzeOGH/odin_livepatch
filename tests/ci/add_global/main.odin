@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A patch adds a global, and the next patch keeps its value.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +9,23 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+when VERSION == 1 {
+	value :: proc() -> int {
+		return 0
+	}
+} else {
+	added := 1000
+	value :: proc() -> int {
+		added += VERSION
+		return added
+	}
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	// 1000 + 2 + .. + v
+	check("added global", value(), v == 1 ? 0 : 1000 + v * (v + 1) / 2 - 1)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A procedure pointer that the exe stored gets the new body.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -13,10 +13,15 @@ value :: proc() -> int {
 	return VERSION
 }
 
-setup :: proc() {}
+stored: proc() -> int
+
+setup :: proc() {
+	stored = value
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("stored pointer", stored(), v)
+	check("direct call", value(), v)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

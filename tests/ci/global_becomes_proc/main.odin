@@ -1,6 +1,7 @@
 package main
 
-// A procedure gets a new body in each patch.
+// v3 replaces a global with a procedure of the same name. A pointer to the global that the exe
+// stored keeps its value: the redirect must not write the old variable.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +10,29 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+// zero is a writable global, so that -o:speed cannot fold the results into constants
+zero := 0
+
+when VERSION < 3 {
+	switched := 77
+	switched_ptr :: proc() -> ^int { return &switched }
+	switched_value :: proc() -> int { return switched + zero }
+} else {
+	switched :: proc() -> int { return 99 }
+	switched_storage: int
+	switched_ptr :: proc() -> ^int { return &switched_storage }
+	switched_value :: proc() -> int { return switched() + zero }
 }
 
-setup :: proc() {}
+stored: ^int
+
+setup :: proc() {
+	stored = switched_ptr()
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("value", switched_value(), v < 3 ? 77 : 99)
+	check("old storage, through the stored pointer", stored^, 77)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

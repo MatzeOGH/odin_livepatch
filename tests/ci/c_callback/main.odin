@@ -1,7 +1,9 @@
 package main
 
-// A procedure gets a new body in each patch.
+// C's qsort calls back into patched code: through a comparator pointer that the exe stored,
+// and through one that new code passes. The new code's address of the comparator is the stored pointer.
 
+import "core:c/libc"
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
@@ -9,14 +11,30 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+// Ascending in odd versions, descending in even versions
+compare :: proc "c" (a, b: rawptr) -> libc.int {
+	x, y := (^i32)(a)^, (^i32)(b)^
+	d := libc.int(x) - libc.int(y)
+	return VERSION % 2 == 1 ? d : -d
 }
 
-setup :: proc() {}
+compare_ptr: proc "c" (a, b: rawptr) -> libc.int
+
+sorted :: proc(by: proc "c" (a, b: rawptr) -> libc.int) -> [4]i32 {
+	xs := [4]i32{3, 1, 4, 2}
+	libc.qsort(&xs, len(xs), size_of(i32), by)
+	return xs
+}
+
+setup :: proc() {
+	compare_ptr = compare
+}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	want := v % 2 == 1 ? [4]i32{1, 2, 3, 4} : [4]i32{4, 3, 2, 1}
+	check("qsort with the stored pointer", sorted(compare_ptr), want)
+	check("qsort with the new pointer", sorted(compare), want)
+	check("&compare is the stored pointer", compare == compare_ptr, true)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.

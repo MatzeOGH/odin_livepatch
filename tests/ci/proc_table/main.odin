@@ -1,6 +1,6 @@
 package main
 
-// A procedure gets a new body in each patch.
+// A struct of procedure pointers that a global initializes. Each pointer gets the new body.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -9,14 +9,26 @@ import "core:os"
 VERSION :: #config(VERSION, 1)
 LAST_VERSION :: 3
 
-value :: proc() -> int {
-	return VERSION
+VTable :: struct {
+	area: proc(w, h: int) -> int,
+	name: proc() -> string,
 }
+
+area :: proc(w, h: int) -> int {
+	return w * h * VERSION
+}
+
+name :: proc() -> string {
+	return fmt.tprintf("v%d", VERSION)
+}
+
+vtable := VTable{area = area, name = name}
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	check("value", value(), v)
+	check("area", vtable.area(2, 3), 6 * v)
+	check("name", vtable.name(), fmt.tprintf("v%d", v))
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
