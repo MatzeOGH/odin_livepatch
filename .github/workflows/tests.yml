@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # run by hand from the Actions tab
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the latest Odin release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R odin-lang/Odin --pattern 'odin-windows-amd64-*.zip' -O odin.zip
+          Expand-Archive odin.zip "$env:RUNNER_TEMP\odin"
+          (Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1).DirectoryName >> $env:GITHUB_PATH
+
+      - run: odin version
+
+      - name: Tests
+        shell: pwsh
+        run: tests\ci\run.ps1
