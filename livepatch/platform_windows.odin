@@ -274,10 +274,6 @@ resume_all :: proc(handles: Suspended_Threads) {
 	delete(handles)
 }
 
-current_process_id :: proc() -> int {
-	return int(win.GetCurrentProcessId())
-}
-
 debugger_attached :: proc() -> bool {
 	return bool(IsDebuggerPresent())
 }
@@ -299,11 +295,6 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 		}
 	}
 	return
-}
-
-// The command that runs the build script
-build_command :: proc(script, output_dir: string) -> []string {
-	return slice.clone([]string{"cmd", "/c", script, output_dir}, context.temp_allocator)
 }
 
 // Links `<stem>.dll` for `base` with lld-link, and writes its `<stem>.map`.
@@ -329,15 +320,7 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
 	}
 
-	process_desc := os.Process_Desc{command = []string{lld_path, strings.concatenate({"@", response_path}, context.temp_allocator)}}
-	state, stdout, stderr, exec_err := os.process_exec(process_desc, context.temp_allocator)
-	if exec_err != nil {
-		return Load_Failed{kind = .Cannot_Run_Linker, os_error = exec_err}
-	}
-	if state.exit_code != 0 {
-		return Load_Failed{kind = .Link_Failed, output = error_text(len(stderr) > 0 ? string(stderr) : string(stdout))}
-	}
-	return nil
+	return run_linker_command({lld_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
 }
 
 // Loads `<stem>.dll`, which must land at `base`, and reads its symbols from `<stem>.map`.

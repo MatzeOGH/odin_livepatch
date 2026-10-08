@@ -70,21 +70,21 @@ rip_operand_immediate_size :: proc(code: []byte, site: int) -> int {
 rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []Elf64_Rela, rela_index: int) -> (ok: bool) {
 	rela := &relas[rela_index]
 	view := &rewrite.object.view
-	rela_type := elf_rela_type(rela.info)
-	symbol_index := int(elf_rela_symbol_index(rela.info))
+	rela_type := rela.info.type
+	symbol_index := int(rela.info.symbol)
 	site := int(rela.offset)
 
 	// The call to __tls_get_addr that follows a TLSGD or TLSLD
 	drop_tls_get_addr_call :: proc(relas: []Elf64_Rela, rela_index: int, call_site: int) -> bool {
 		for later in rela_index + 1 ..< len(relas) {
 			if int(relas[later].offset) == call_site {
-				relas[later].info = elf_rela_info(0, R_X86_64_NONE)
+				relas[later].info = Elf_Rela_Info{type = R_X86_64_NONE}
 				return true
 			}
 		}
 		return false
 	}
-	is_section := elf_symbol_type(view.syms[symbol_index].info) == STT_SECTION
+	is_section := view.syms[symbol_index].info.type == STT_SECTION
 
 	switch rela_type {
 	case R_X86_64_GOTTPOFF:
@@ -148,6 +148,6 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		tp_offset := thread_pointer_offset(rewrite, symbol_index, rela.addend) or_return
 		(^i32)(&code[site])^ = tp_offset
 	}
-	rela.info = elf_rela_info(0, R_X86_64_NONE)
+	rela.info = Elf_Rela_Info{type = R_X86_64_NONE}
 	return true
 }

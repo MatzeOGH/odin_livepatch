@@ -10,7 +10,6 @@ PATCH_MODULE_DIRNAME :: "livepatch_mod"
 
 @(private) patch_generation: int
 
-// Full link name address, from the symbols of the patch module
 Patch_Module :: map[string]uintptr
 
 link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Merged) -> (mod: Patch_Module, err: Error) {
@@ -23,7 +22,7 @@ link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Mer
 		sweep_module_dir(module_dir)
 	}
 	patch_generation += 1
-	stem, _ := filepath.join({module_dir, fmt.tprintf("lp_%d_g%d", current_process_id(), patch_generation)}, context.temp_allocator)
+	stem, _ := filepath.join({module_dir, fmt.tprintf("lp_%d_g%d", os.get_pid(), patch_generation)}, context.temp_allocator)
 
 	absolute_object_path, _ := filepath.join({output_dir, "lp_abs.o"}, context.temp_allocator)
 	if write_err := os.write_entire_file(absolute_object_path, absolute_symbols_object(merged)); write_err != nil {
@@ -49,7 +48,31 @@ link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Mer
 	return load_patch_module(stem, base, objects)
 }
 
-// delete old artifacts
+run_linker_command :: proc(command: []string) -> Error {
+	state, stdout, stderr, exec_err := os.process_exec(os.Process_Desc{command = command}, context.temp_allocator)
+	if exec_err != nil {
+		return Load_Failed{kind = .Cannot_Run_Linker, os_error = exec_err}
+	}
+	if state.exit_code != 0 {
+		return Load_Failed{kind = .Link_Failed, output = error_text(len(stderr) > 0 ? string(stderr) : string(stdout))}
+	}
+	return nil
+}
+
+on_path :: proc(name: string) -> (path: string, ok: bool) {
+	rest, _ := os.lookup_env("PATH", context.temp_allocator)
+	for dir in strings.split_by_byte_iterator(&rest, u8(filepath.LIST_SEPARATOR)) {
+		if dir == "" {
+			continue
+		}
+		candidate, _ := filepath.join({dir, name}, context.temp_allocator)
+		if os.exists(candidate) {
+			return candidate, true
+		}
+	}
+	return
+}
+
 sweep_module_dir :: proc(module_dir: string) {
 	os.make_directory(module_dir)
 	entries, err := os.read_all_directory_by_path(module_dir, context.temp_allocator)
