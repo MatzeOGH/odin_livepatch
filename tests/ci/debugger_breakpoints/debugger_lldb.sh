@@ -14,14 +14,24 @@ cd "$DIR" || exit 1
 
 # lldb learns of each patch through the GDB JIT interface, which is off by default. patch()
 # stops the other threads with signal 62, which lldb must give to the program. lldb reads
-# main::stop_v2 as a C++ scope, so the breakpoints are regexes. Each breakpoint prints the stack
-# and the variables of its caller (frame 1), then continues (-G true).
+# main::stop_v2 as a C++ scope, so the breakpoints are regexes. The commands for each stop run
+# in order after the continue that reaches it, not as commands of the breakpoint: there, lldb
+# runs each command in frame 0, and frame select has no effect on the next command. Each stop
+# prints the stack and the variables of its caller (frame 1).
 cat > lldb_commands.txt << 'EOF'
 settings set plugin.jit-loader.gdb.enable on
-breakpoint set -r ^main::stop_v2$ -G true -C "thread backtrace --count 6" -C "frame select 1" -C "frame variable"
-breakpoint set -r ^main::stop_v3$ -G true -C "thread backtrace --count 6" -C "frame select 1" -C "frame variable"
+breakpoint set -r ^main::stop_v2$
+breakpoint set -r ^main::stop_v3$
 process launch --stop-at-entry
 process handle 62 --stop false --notify false --pass true
+continue
+thread backtrace --count 6
+frame select 1
+frame variable n doubled
+continue
+thread backtrace --count 6
+frame select 1
+frame variable n tripled
 continue
 EOF
 "$LLDB" --batch -s lldb_commands.txt -- ./app > lldb.log 2>&1
