@@ -104,10 +104,13 @@ Nlist_64 :: struct #packed {
 	n_value: u64,
 }
 
-// r_info: symbolnum:24, pcrel:1, length:2, extern:1, type:4
-Relocation_Info :: struct #packed {
-	r_address: i32,
-	r_info:    u32,
+Relocation_Info :: bit_field u64 {
+	address:   i32  | 32,
+	symbolnum: u32  | 24, // a section number when !is_extern, the addend for ARM64_RELOC_ADDEND
+	pcrel:     bool | 1,
+	length:    u32  | 2,
+	is_extern: bool | 1,
+	type:      u32  | 4,
 }
 
 MH_MAGIC_64 :: 0xFEED_FACF
@@ -138,7 +141,6 @@ N_SECT :: 0xE
 
 NO_SECT :: 0
 
-// Section flags: the type in the low byte, then attributes
 SECTION_TYPE                         :: 0x0000_00FF
 S_REGULAR                            :: 0x00
 S_ZEROFILL                           :: 0x01
@@ -169,16 +171,6 @@ ARM64_RELOC_TLVP_LOAD_PAGE21    :: 8
 ARM64_RELOC_TLVP_LOAD_PAGEOFF12 :: 9
 ARM64_RELOC_ADDEND              :: 10
 
-reloc_symbolnum :: #force_inline proc "contextless" (r: Relocation_Info) -> u32 { return r.r_info & 0x00FF_FFFF }
-reloc_pcrel     :: #force_inline proc "contextless" (r: Relocation_Info) -> bool { return (r.r_info >> 24) & 1 != 0 }
-reloc_length    :: #force_inline proc "contextless" (r: Relocation_Info) -> u32 { return (r.r_info >> 25) & 3 }
-reloc_extern    :: #force_inline proc "contextless" (r: Relocation_Info) -> bool { return (r.r_info >> 27) & 1 != 0 }
-reloc_type      :: #force_inline proc "contextless" (r: Relocation_Info) -> u32 { return r.r_info >> 28 }
-
-reloc_make :: proc "contextless" (symbolnum: u32, pcrel: bool, length: u32, is_extern: bool, type: u32) -> u32 {
-	return symbolnum & 0x00FF_FFFF | u32(pcrel) << 24 | (length & 3) << 25 | u32(is_extern) << 27 | type << 28
-}
-
 Macho_View :: struct {
 	header:     ^Mach_Header_64,
 	segments:   [dynamic]^Segment_Command_64,
@@ -197,7 +189,7 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (v: Ma
 	}
 	h := (^Mach_Header_64)(raw_data(data))
 	if h.magic != MH_MAGIC_64 || h.cputype != CPU_TYPE_ARM64 {
-		return // not a thin 64-bit arm64 Mach-O
+		return
 	}
 	v.header = h
 	v.segments = make([dynamic]^Segment_Command_64, allocator)
@@ -257,7 +249,6 @@ fixed_name :: proc "contextless" (b: ^[16]u8) -> string {
 macho_section_name :: proc "contextless" (sh: ^Section_64) -> string { return fixed_name(&sh.sectname) }
 macho_segment_name :: proc "contextless" (sh: ^Section_64) -> string { return fixed_name(&sh.segname) }
 
-// The raw name in the string table, with its underscore
 macho_raw_name :: proc "contextless" (v: ^Macho_View, sym: ^Nlist_64) -> string {
 	if int(sym.n_strx) >= len(v.strtab) {
 		return ""
