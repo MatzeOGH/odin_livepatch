@@ -42,12 +42,12 @@ $failed = $false
 function expect($label, $pattern, $count = 1) {
     $found = ([regex]::Matches($text, "(?m)$pattern")).Count
     if ($found -ge $count) { Write-Host "  OK    $label" } else { Write-Host "  FAIL  $label (found $found of $count)"; $script:failed = $true }
+}
 # A local or an argument: optimized code (-o:minimal, -o:speed) keeps it in a register or
 # removes it, so cdb shows <value unavailable> or a stale value. Checked at -o:none only.
 function expect_value($label, $pattern) {
     if ($env:OPT -and $env:OPT -ne 'none') { Write-Host "  SKIP  $label (-o:$env:OPT)"; return }
     expect $label $pattern
-}
 }
 expect 'v2: stopped in the patch'           '^STOP v2\s*$'
 expect 'v2: in the patch module'            'lp_\w+!main::stop_v2'
