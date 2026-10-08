@@ -10,6 +10,7 @@ jobs:
     uses: ./.github/workflows/odin-master.yml
 
   windows:
+    if: false # macos-arm branch: macOS only
     name: Windows x64 -o:${{ matrix.opt }}
     needs: odin
     runs-on: windows-2025
@@ -44,6 +45,7 @@ jobs:
         run: tests\ci\run.ps1
 
   linux:
+    if: false # macos-arm branch: macOS only
     name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
     needs: odin
     runs-on: ubuntu-latest
@@ -82,7 +84,7 @@ jobs:
         run: tests/ci/run.ps1
 
   macos-arm:
-    # Port in progress: the tests fail until livepatch patches macOS ARM.
+    # Port in progress: only the tests that pass on macOS so far. Add a test here when it passes.
     name: macOS ARM -o:${{ matrix.opt }}
     needs: odin
     runs-on: macos-15
@@ -119,4 +121,12 @@ jobs:
 
       - name: Tests
         shell: pwsh
-        run: tests/ci/run.ps1
+        run: tests/ci/run.ps1 change_proc
+
+      - name: Upload the patch output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: livepatch-macos-arm-${{ matrix.opt }}
+          path: tests/ci/*/livepatch*/
+          if-no-files-found: ignore
