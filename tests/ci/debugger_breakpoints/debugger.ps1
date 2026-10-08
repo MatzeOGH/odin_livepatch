@@ -20,9 +20,11 @@ $on_load = @(
 )
 $on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'
 Set-Content $on_load_file $on_load
+# Forward slashes: in a quoted cdb string, a backslash starts an escape. The \a in D:\a\... is a bell.
+$on_load_path = $on_load_file -replace '\\', '/'
 $commands = @(
     '.lines -e'
-    "sxe -c `"`$`$<$on_load_file`" ld:lp_*"
+    "sxe -c `"`$`$<$on_load_path`" ld:lp_*"
     'g'
 )
 $commands_file = Join-Path $PSScriptRoot 'cdb_commands.txt'
