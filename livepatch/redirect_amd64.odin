@@ -119,6 +119,9 @@ first_instruction :: proc(code: []u8) -> (length, undo: int, ok: bool) {
 	case (code[0] == 0x48 || code[0] == 0x4C) && code[1] == 0x89 && (code[2] & 0xC7) == 0x44 && code[3] == 0x24 && code[4] < 0x80 && code[4] >= 8:
 		// mov [rsp+disp8], r64: a spill to the caller's home space. Nothing to undo.
 		return 5, 0, true
+	case (code[0] == 0x48 || code[0] == 0x4C) && code[1] == 0x89 && (code[2] & 0xC7) == 0x44 && code[3] == 0x24 && code[4] >= 0x80 && code[4] <= 0xF8:
+		// mov [rsp-disp8], r64 with disp8 <= -8: a spill to the red zone. Nothing to undo.
+		return 5, 0, true
 	}
 	return
 }

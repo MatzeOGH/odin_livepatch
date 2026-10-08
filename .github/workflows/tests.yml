@@ -1,0 +1,82 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # run by hand from the Actions tab
+
+jobs:
+  odin:
+    uses: ./.github/workflows/odin-master.yml
+
+  windows:
+    name: Windows x64 -o:${{ matrix.opt }}
+    needs: odin
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each -o: level reports on its own
+      matrix:
+        opt: [none, minimal, speed]
+    env:
+      OPT: ${{ matrix.opt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-windows
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory "$env:RUNNER_TEMP\odin" | Out-Null
+          tar -xzf "$env:RUNNER_TEMP\odin.tar.gz" -C "$env:RUNNER_TEMP\odin"
+          "$env:RUNNER_TEMP\odin" >> $env:GITHUB_PATH
+
+      - name: Show the toolchain
+        shell: pwsh
+        run: odin version
+
+      - name: Tests
+        shell: pwsh
+        run: tests\ci\run.ps1
+
+  linux:
+    name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
+    needs: odin
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each -o: level and each relocation mode reports on its own
+      matrix:
+        opt: [none, minimal, speed]
+        reloc: [pie, static] # static: -reloc-mode:static
+    env:
+      OPT: ${{ matrix.opt }}
+      RELOC: ${{ matrix.reloc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the patch linker
+        run: sudo apt-get update && sudo apt-get install -y lld
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-linux
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
+        run: |
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          odin version
+          ld.lld --version
+
+      - name: Tests
+        shell: pwsh
+        run: tests/ci/run.ps1

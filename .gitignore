@@ -20,3 +20,15 @@ tests/*/livepatch/
 tests/run.log
 tests/*/lldb.log
 tests/*/gdb.log
+tests/ci/*/livepatch/
+tests/ci/*/watched/
+tests/ci/*/cdb.log
+tests/ci/*/cdb_commands.txt
+tests/ci/*/cdb_on_load.txt
+tests/ci/*/app
+tests/ci/*/gdb.log
+tests/ci/*/gdb_commands.txt
+tests/ci/*/lldb.log
+tests/ci/*/lldb_commands.txt
+tests/ci/*/raddbg.log
+tests/ci/*/test.raddbg_user

@@ -3,9 +3,20 @@ package livepatch
 
 import "core:os"
 import "core:strings"
-import "core:time"
 
-read_all :: proc(dir: string, since: time.Time, allocator := context.temp_allocator) -> (objs: []Loaded_Object, ok: bool) {
+remove_objects :: proc(dir: string) {
+	entries, dir_err := os.read_all_directory_by_path(dir, context.temp_allocator)
+	if dir_err != nil {
+		return
+	}
+	for entry in entries {
+		if entry.type != .Directory && strings.has_suffix(entry.name, OBJECT_EXT) {
+			_ = os.remove(entry.fullpath)
+		}
+	}
+}
+
+read_all :: proc(dir: string, allocator := context.temp_allocator) -> (objs: []Loaded_Object, ok: bool) {
 	entries, dir_err := os.read_all_directory_by_path(dir, allocator)
 	if dir_err != nil {
 		return
@@ -13,7 +24,7 @@ read_all :: proc(dir: string, since: time.Time, allocator := context.temp_alloca
 
 	loaded := make([dynamic]Loaded_Object, allocator)
 	for entry in entries {
-		if entry.type == .Directory || !strings.has_suffix(entry.name, OBJECT_EXT) || time.diff(since, entry.modification_time) < 0 {
+		if entry.type == .Directory || !strings.has_suffix(entry.name, OBJECT_EXT) {
 			continue
 		}
 		path := entry.fullpath

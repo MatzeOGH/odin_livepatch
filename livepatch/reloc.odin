@@ -2,6 +2,7 @@
 package livepatch
 
 import pe "core:debug/pe"
+import "core:mem"
 import "core:slice"
 import "core:strings"
 
@@ -67,10 +68,41 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 		callable[symbol_index] = name
 	}
 
+	// Debug records of kept data point at the live storage (see Debug_Types)
+	types := Debug_Types{refs = make(map[u32]u32, allocator), records = make([dynamic]u8, allocator), section = -1}
+	cells := make(map[int]u32, allocator) // symbol index -> index of its `lp$r<name>`
+	for section_index in 0 ..< view.section_count {
+		section := coff_section_header(data, view.section_headers_offset, section_index)
+		if coff_section_name(section) == ".debug$T" {
+			types.section = section_index
+			types.next = CV_FIRST_TYPE + u32(cv_type_count(data, section))
+		}
+	}
+
 	for section_index in 0 ..< view.section_count {
 		section := coff_section_header(data, view.section_headers_offset, section_index)
 		if coff_section_name(section) == ".drectve" {
 			strip_exports(data, section)
+		}
+		if coff_section_name(section) == ".debug$S" && types.section >= 0 {
+			relocs := coff_section_relocs(data, view.section_headers_offset, section_index)
+			for reloc_index in kept_data_records(data, section, relocs, live, &types) {
+				symbol_index := int(relocs[reloc_index].symbol_table_index)
+				cell, found := cells[symbol_index]
+				if !found {
+					name := strings.concatenate({"lp$r", coff_symbol_name(coff_symbol_at(data, view.symtab_offset, symbol_index), data, view.strtab_offset)}, allocator)
+					merged.debug_cells[name] = rawptr(live[symbol_index])
+					cell_sym: Coff_Symbol
+					set_long_name(&cell_sym, name, &added_strings, strtab_size)
+					cell_sym.storage_class = .EXTERNAL
+					cell = u32(view.symbol_count + len(added_syms))
+					cells[symbol_index] = cell
+					append(&added_syms, cell_sym)
+				}
+				// The SECREL of the offset and the SECTION of the section index
+				relocs[reloc_index].symbol_table_index = u32le(cell)
+				relocs[reloc_index + 1].symbol_table_index = u32le(cell)
+			}
 		}
 		if is_discarded_section(section) {
 			continue
@@ -129,18 +161,106 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 		set_section_reloc_count(data, view.section_headers_offset, section_index, kept)
 	}
 
-	// The new symbols go between the symbol table and the string table.
+	// New symbols go before the string table, a grown .debug$T after it.
 	head := view.strtab_offset
-	out = make([]byte, head + len(added_syms) * pe.COFF_SYMBOL_SIZE + strtab_size + len(added_strings), allocator)
+	tail := head + len(added_syms) * pe.COFF_SYMBOL_SIZE
+	types_offset := mem.align_forward_int(tail + strtab_size + len(added_strings), 4)
+	old_types: []byte
+	if len(types.records) > 0 {
+		section := coff_section_header(data, view.section_headers_offset, types.section)
+		old_types = data[int(section.pointer_to_raw_data):][:int(section.size_of_raw_data)]
+	}
+	out = make([]byte, len(old_types) > 0 ? types_offset + len(old_types) + len(types.records) : tail + strtab_size + len(added_strings), allocator)
 	copy(out, data[:head])
 	copy(out[head:], slice.to_bytes(added_syms[:]))
-	tail := head + len(added_syms) * pe.COFF_SYMBOL_SIZE
 	copy(out[tail:], data[view.strtab_offset:])
 	copy(out[tail + strtab_size:], added_strings[:])
 	(^u32le)(raw_data(out[tail:]))^ = u32le(strtab_size + len(added_strings))
 	file_header := (^pe.File_Header)(raw_data(out))
 	file_header.number_of_symbols = u32le(view.symbol_count + len(added_syms))
+	if len(old_types) > 0 {
+		copy(out[types_offset:], old_types)
+		copy(out[types_offset + len(old_types):], types.records[:])
+		section := coff_section_header(out, view.section_headers_offset, types.section)
+		section.pointer_to_raw_data = u32le(types_offset)
+		section.size_of_raw_data = u32le(len(old_types) + len(types.records))
+	}
 	return out, ""
+}
+
+// A debug record of kept data becomes a reference through a cell `lp$r<name>` that holds the live address.
+CV_FIRST_TYPE :: 0x1000
+CV_S_SKIP :: 0x0007
+CV_S_LDATA32 :: 0x110C
+CV_S_GDATA32 :: 0x110D
+CV_S_LTHREAD32 :: 0x1112
+CV_S_GTHREAD32 :: 0x1113
+CV_LF_POINTER :: 0x1002
+// CV_PTR_64 (0x0C), mode CV_PTR_MODE_LVREF (1 << 5), size 8 (8 << 13)
+CV_REFERENCE_64 :: 0x0C | 1 << 5 | 8 << 13
+
+Debug_Types :: struct {
+	section: int,         // the .debug$T section, or -1
+	next:    u32,         // the index of the next new type record
+	refs:    map[u32]u32, // type index -> index of its reference type
+	records: [dynamic]u8, // the new type records
+}
+
+// The number of type records in a .debug$T section, after its 4-byte signature
+cv_type_count :: proc(data: []byte, section: ^pe.Section_Header32) -> (count: int) {
+	start := int(section.pointer_to_raw_data)
+	end := start + int(section.size_of_raw_data)
+	if end > len(data) {
+		return
+	}
+	for pos := start + 4; pos + 2 <= end; count += 1 {
+		pos += 2 + int((^u16le)(raw_data(data[pos:]))^)
+	}
+	return
+}
+
+// Makes kept data records references and thread-local records S_SKIP. Returns the SECREL index of each data record.
+kept_data_records :: proc(data: []byte, section: ^pe.Section_Header32, relocs: []Coff_Reloc, live: map[int]uintptr, types: ^Debug_Types) -> []int {
+	found := make([dynamic]int, context.temp_allocator)
+	start := int(section.pointer_to_raw_data)
+	end := start + int(section.size_of_raw_data)
+	for reloc, reloc_index in relocs {
+		if reloc.type != .AMD64_SECREL || reloc_index + 1 >= len(relocs) {
+			continue
+		}
+		next := relocs[reloc_index + 1]
+		if next.type != .AMD64_SECTION || next.symbol_table_index != reloc.symbol_table_index || next.virtual_address != reloc.virtual_address + 4 {
+			continue
+		}
+		// The record: length (2), kind (2), type index (4), then the offset with this relocation
+		offset_at := start + int(reloc.virtual_address)
+		if offset_at - 8 < start || offset_at + 6 > end || end > len(data) {
+			continue
+		}
+		kind := (^u16le)(raw_data(data[offset_at - 6:]))
+		if kind^ == CV_S_LTHREAD32 || kind^ == CV_S_GTHREAD32 {
+			kind^ = CV_S_SKIP
+			continue
+		}
+		if kind^ != CV_S_LDATA32 && kind^ != CV_S_GDATA32 || int(reloc.symbol_table_index) not_in live {
+			continue
+		}
+		type_index := (^u32le)(raw_data(data[offset_at - 4:]))
+		ref, made := types.refs[u32(type_index^)]
+		if !made {
+			ref = types.next
+			types.next += 1
+			types.refs[u32(type_index^)] = ref
+			record := struct #packed {
+				length, kind: u16le,
+				referent, attributes: u32le,
+			}{10, CV_LF_POINTER, type_index^, CV_REFERENCE_64}
+			append(&types.records, ..mem.ptr_to_bytes(&record))
+		}
+		type_index^ = u32le(ref)
+		append(&found, reloc_index)
+	}
+	return found[:]
 }
 
 strip_exports :: proc(data: []byte, section: ^pe.Section_Header32) {

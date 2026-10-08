@@ -138,7 +138,6 @@ When `patch()` returns an error, the running program does not change.
 | `Build_Failed` | The build script failed or did not start. `output` has the compiler output. |
 | `No_Map` | Windows: the exe has no `.map` file (no `/MAP`). Linux: the exe is stripped. |
 | `No_Objects_Mapped` | An object file could not be read or rewritten. |
-| `Too_Few_Objects` | The build script does not use `-use-separate-modules`. |
 | `Unresolved_Symbol` | The new code uses a symbol that `patch()` cannot bind, such as a new `@thread_local`. |
 | `Global_Grew` | Linux: a global stored by value (or a `@static` local) is larger in the patch than its storage in the exe or in an earlier patch. New code would write past its end. `name`, `old_size` and `new_size` tell which. |
 | `Global_Needs_Init` | The patch adds a global whose initial value the startup code computes, such as `n := count()` or a `map` literal. A patch does not run the startup code, so the global would stay zero. `name` is the global. |
@@ -313,10 +312,11 @@ signal, the threads do not pause, and `patch()` fails with `Commit_Failed` after
 | Debugger | Signal | Breakpoints in a patch |
 | --- | --- | --- |
 | gdb | `handle SIG62 nostop noprint pass` | `set breakpoint pending on` |
-| lldb | `process handle SIG62 --stop false --notify false --pass true` | `settings set plugin.jit-loader.gdb.enable on` |
+| lldb | `process handle 62 --stop false --notify false --pass true` | `settings set plugin.jit-loader.gdb.enable on` |
 
-If you set `-define:LIVEPATCH_SIGNAL=<n>`, use `SIG<n>` in these commands. Windows does not
-use a signal, so no setup is necessary there.
+lldb names the real-time signals `SIGRTMIN+<x>` and `SIGRTMAX-<x>`, and does not accept `SIG62`.
+Thus give lldb the number. If you set `-define:LIVEPATCH_SIGNAL=<n>`, use `SIG<n>` for gdb and
+`<n>` for lldb. Windows does not use a signal, so no setup is necessary there.
 
 **VS Code**, with the CodeLLDB extension, in `.vscode/launch.json`:
 
@@ -328,7 +328,7 @@ use a signal, so no setup is necessary there.
   "program": "${workspaceFolder}/examples/demo",
   "cwd": "${workspaceFolder}/examples",
   "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
-  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+  "preRunCommands": ["process handle 62 --stop false --notify false --pass true"]
 }
 ```
 
@@ -359,6 +359,6 @@ use a signal, so no setup is necessary there.
   "program": "$ZED_WORKTREE_ROOT/examples/demo",
   "cwd": "$ZED_WORKTREE_ROOT/examples",
   "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
-  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+  "preRunCommands": ["process handle 62 --stop false --notify false --pass true"]
 }
 ```
