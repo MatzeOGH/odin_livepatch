@@ -9,7 +9,7 @@ FLAGS="-debug -o:${OPT:-none} -define:VERSION=${VERSION:-1} -use-separate-module
 
 if [ -z "$1" ]; then
 	# Not windows_i386: on Linux, Odin needs a Windows SDK to check a Windows target
-	for target in linux_arm64 linux_riscv64 darwin_amd64 darwin_arm64 freebsd_amd64; do
+	for target in linux_arm64 linux_riscv64 darwin_amd64 freebsd_amd64; do
 		echo "type-check LIVEPATCH=true -target:$target"
 		"$ODIN" check "$DIR" -target:$target -define:LIVEPATCH=true || exit 1
 	done

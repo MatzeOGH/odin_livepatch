@@ -13,6 +13,11 @@ import "core:testing"
 // Its address minus its symbol value is the slide of the test exe
 test_probe: u8
 
+// Not file-private: that would add `[macho_test.odin]::` to its link name
+test_generic :: proc(x: $T) -> T {
+	return x * 2
+}
+
 // The test exe is a Mach-O file that the system linker wrote. Its symbols must give the
 // live addresses of the variables and procedures of this package.
 @(test)
@@ -84,8 +89,58 @@ test_macho_exe :: proc(t: ^testing.T) {
 	expect_address(t, symbols.symbols, "livepatch::test_probe", uintptr(&test_probe))
 	expect_address(t, symbols.symbols, "livepatch::test_macho_exe", uintptr(rawptr(test_macho_exe)))
 	expect_address(t, symbols.symbols, "livepatch::macho_parse", uintptr(rawptr(macho_parse)))
+
+	// Two instances of a generic procedure of this package: each has its own unique name
+	instances := 0
+	testing.expect_value(t, test_generic(1), 2)
+	testing.expect_value(t, test_generic(1.5), 3.0)
+	for key, addr in symbols.symbols {
+		if strings.has_prefix(key, "livepatch::test_generic") {
+			log.infof("generic instance %s 0x%x", key, addr)
+			instances += 1
+		}
+	}
+	testing.expect_value(t, instances, 2)
 	testing.expect(t, "livepatch::test_thread_local" in symbols.tls, "the thread-local has a TLV descriptor")
 	testing.expect(t, len(symbols.starts) >= len(symbols.symbols), "each symbol has a start")
+	testing.expect_value(t, slide & (0x4000 - 1), 0) // the slide is a multiple of the 16KB page
+
+	// Each local and each external definition has a start
+	if dysymtab := view.dysymtab; dysymtab != nil {
+		testing.expect_value(t, len(symbols.starts), int(dysymtab.nlocalsym + dysymtab.nextdefsym))
+	}
+
+	// A TLV descriptor is 24 bytes: thunk, key, offset
+	for section in view.sections {
+		if section.flags & SECTION_TYPE == S_THREAD_LOCAL_VARIABLES {
+			log.infof("__thread_vars: 0x%x bytes = %d descriptors", section.size, section.size / 24)
+			testing.expect_value(t, len(symbols.tls), int(section.size / 24))
+		}
+	}
+
+	// The names that are defined at more than one address. read_macho_symbols leaves them out.
+	// With -use-separate-modules, only the helpers that the compiler makes in each module
+	// (`__$hasher$...`, `__$map_get$...`) have internal linkage and can repeat. A user
+	// procedure, also a generic instance, has external linkage, so it is defined one time.
+	addresses := make(map[string]uintptr, context.temp_allocator)
+	ambiguous := make(map[string]int, context.temp_allocator)
+	for &sym in view.syms {
+		raw := macho_raw_name(&view, &sym)
+		if macho_symbol_section(&view, &sym) == nil || macho_is_temporary(raw) {
+			continue
+		}
+		name := macho_symbol_name(&view, &sym)
+		if addr, found := addresses[name]; found && addr != uintptr(sym.n_value) {
+			ambiguous[name] += 1
+		}
+		addresses[name] = uintptr(sym.n_value)
+	}
+	for name, extra in ambiguous {
+		log.debugf("  ambiguous %-60s %d more definitions", name, extra)
+		testing.expect(t, name not_in symbols.symbols, "an ambiguous name has no key")
+		testing.expectf(t, strings.has_prefix(name, "__$"), "only compiler helpers repeat, but %s does", name)
+	}
+	log.infof("%d names, %d of them ambiguous", len(addresses), len(ambiguous))
 
 	// The live code at the address of this procedure is the code in the file
 	for section in view.sections {

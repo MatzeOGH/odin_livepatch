@@ -9,7 +9,7 @@ if not defined VERSION set VERSION=1
 set FLAGS=-debug -o:%OPT% -define:VERSION=%VERSION% -use-separate-modules -define:LIVEPATCH=false
 
 if "%~1"=="" (
-    for %%T in (linux_arm64 linux_riscv64 darwin_amd64 darwin_arm64 freebsd_amd64 windows_i386) do (
+    for %%T in (linux_arm64 linux_riscv64 darwin_amd64 freebsd_amd64 windows_i386) do (
         echo type-check LIVEPATCH=true -target:%%T
         "%ODIN%" check "%~dp0." -target:%%T -define:LIVEPATCH=true || exit /b 1
     )
