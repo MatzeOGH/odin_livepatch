@@ -19,11 +19,14 @@ if (-not (Test-Path $cdb)) {
 # cdb resolves a breakpoint on a symbol only with its module name, and the name of a patch
 # module (lp_<pid>_g<n>) is not known before the patch. Thus, each time a module lp_* loads,
 # cdb runs cdb_on_load.txt, which sets the breakpoints with bm in all modules lp_*.
+# Optimized code removes the locals of v4. Then da fails, and an error stops the rest of the
+# command list, also its g. Thus the v4 stop reads the locals at -o:none only.
+$v4_reads = if ($env:OPT -and $env:OPT -ne 'none') { '' } else { '.frame 1; dx n; dq @@c++(&label) L2; da @@c++((unsigned char *)label) L4; dx doubled; ' }
 $on_load = @(
     'bm lp_*!main::stop_v2 ".echo STOP v2; k 6; .frame 1; dx p; dx total; dq app!main::counter L1; g"'
     'bm lp_*!main::loop_v3 "j (@rcx == 5) ''.echo STOP v3 loop; r rcx; .frame 1; dv; dx sum; g'' ; ''g''"'
     'bm lp_*!main::stop_v3 ".echo STOP v3 end; .frame 1; dx -r1 values; dx total; dq app!main::counter L1; g"'
-    'bm lp_*!main::stop_v4 ".echo STOP v4; k 3; .frame 1; dx n; dq @@c++(&label) L2; da @@c++((unsigned char *)label) L4; dx doubled; g"'
+    "bm lp_*!main::stop_v4 `".echo STOP v4; k 3; ${v4_reads}g`""
     'g'
 )
 $on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'

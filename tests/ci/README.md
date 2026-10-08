@@ -63,4 +63,4 @@ cdb is in the Debugging Tools for Windows, a feature of the Windows SDK. When cd
 
 ## CI
 
-The workflow runs on `windows-2025`, with one job for each `-o:` level. Each job runs the tests, then the debugger tests as a separate step (`Debugger tests (cdb)`), also when the tests failed. The image of this runner has cdb. The workflow uses the latest release of Odin, not Odin master. Each job uploads its cdb logs.
+The workflow runs on `windows-2025`, with one job for each `-o:` level. Each job runs the tests, then the debugger tests as a separate step (`Debugger tests (cdb)`), also when the tests failed. The image of this runner has cdb. The workflow uses the latest release of Odin, not Odin master. The output of each step has the full cdb log.

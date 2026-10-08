@@ -43,11 +43,3 @@ jobs:
         if: success() || failure() # also when the tests failed
         shell: pwsh
         run: tests\ci\run_debugger.ps1
-
-      - name: Upload the cdb logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cdb-logs-${{ matrix.opt }}
-          path: tests/ci/*/cdb.log
-          if-no-files-found: ignore
