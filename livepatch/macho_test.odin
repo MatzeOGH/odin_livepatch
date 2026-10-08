@@ -1,7 +1,7 @@
 #+build darwin arm64
 package livepatch
 
-// Run: odin test livepatch -define:ODIN_TEST_LOG_LEVEL=debug -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1
+// Run: odin test livepatch -use-separate-modules -define:ODIN_TEST_LOG_LEVEL=debug -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1
 
 import "core:log"
 import "core:os"

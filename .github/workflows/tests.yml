@@ -121,9 +121,10 @@ jobs:
 
       - name: Unit tests (Mach-O parsing)
         shell: bash # -o pipefail: the tee must not hide a failure
+        # -use-separate-modules as in a livepatch build: else -o:speed makes every symbol internal
         # Debug logs, plain output, one test at a time, so the log reads in order
         run: >
-          odin test livepatch -o:${{ matrix.opt }}
+          odin test livepatch -o:${{ matrix.opt }} -use-separate-modules
           -define:ODIN_TEST_LOG_LEVEL=debug -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1
           2>&1 | tee macho_test.log
 
