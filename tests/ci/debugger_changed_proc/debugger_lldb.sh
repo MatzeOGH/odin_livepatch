@@ -54,7 +54,9 @@ expect_unoptimized 'v3: the body of v3'              ' body_version = 3$'
 expect_unoptimized 'v3: its local scaled'            ' scaled = 30$'
 expect             'the program finished'            'ALL OK'
 expect             'it exited normally'              'exited with status = 0'
-# One stop for each version: a stop in an old body would be a fourth
-stops=$(grep -c 'stop reason = breakpoint' lldb.log)
+# One stop for each version: a stop in an old body would be a fourth. Each stop prints
+# "stop reason = breakpoint" two times (the stop and thread backtrace), but only the stop prints
+# its frame #0 with four spaces of indent.
+stops=$(grep -c '^    frame #0: ' lldb.log)
 if [ "$stops" -ne 3 ]; then echo "  FAIL  the breakpoint stopped $stops times, not 3"; failed=1; fi
 exit $failed

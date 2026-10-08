@@ -25,7 +25,7 @@ when VERSION >= 2 {
 // that does nothing.
 stops: int
 stop_here :: #force_no_inline proc() {
-	stops += VERSION
+	stops += 1 // the same in each version: a patch does not redirect a procedure with a breakpoint
 }
 
 // Returns the number of calls

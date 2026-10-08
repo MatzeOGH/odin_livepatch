@@ -18,17 +18,19 @@ $bp_commands = '".echo STOP; k 3; dv; g"'
 # start. The name of a patch module (lp_<pid>_g<n>) is not known before the patch. Thus, each time
 # a module lp_* loads, cdb runs cdb_on_load.txt, which sets the breakpoint in each module lp_*
 # (lm1m lists their names).
-# .foreach replaces only a whole token, so the name goes into the alias ModName first. A
-# .block expands the alias in each iteration. ad deletes the alias of the last load first: else
-# cdb expands the old name once, when it reads the line.
+# .foreach replaces only a whole token, so each name goes to cdb_set_bp.txt as an argument
+# ($arg1). An alias set in the .foreach does not work: cdb expands it once, so all modules get
+# the name of the first module, and the newest module gets no breakpoint.
+# Forward slashes: in a quoted cdb string, a backslash starts an escape. The \a in D:\a\... is a bell.
+$set_bp_file = Join-Path $PSScriptRoot 'cdb_set_bp.txt'
+Set-Content $set_bp_file "bp ``$`{`$arg1}!main.odin:$line`` $bp_commands"
+$set_bp_path = $set_bp_file -replace '\\', '/'
 $on_load = @(
-    'ad /q ModName'
-    ".foreach (PATCHMOD {lm1m m lp_*}) { aS ModName PATCHMOD; .block { bp ``$`{ModName}!main.odin:$line`` $bp_commands } }"
+    ".foreach (PATCHMOD {lm1m m lp_*}) { `$`$>a<$set_bp_path PATCHMOD }"
     'g'
 )
 $on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'
 Set-Content $on_load_file $on_load
-# Forward slashes: in a quoted cdb string, a backslash starts an escape. The \a in D:\a\... is a bell.
 $on_load_path = $on_load_file -replace '\\', '/'
 $commands = @(
     '.lines -e'

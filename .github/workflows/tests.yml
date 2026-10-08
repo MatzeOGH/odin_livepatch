@@ -6,8 +6,56 @@ on:
   workflow_dispatch: # run by hand from the Actions tab
 
 jobs:
+  # Odin master is built once per platform. The test jobs download the result.
+  # The tests do not import vendor:, so no LFS and no vendor/ folder.
+  odin-windows:
+    name: Build Odin master (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: cmd
+        run: build.bat release
+      - name: Pack
+        shell: pwsh
+        run: tar -czf odin.tar.gz odin.exe LLVM-C.dll base core shared bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-windows
+          path: odin.tar.gz
+          retention-days: 1
+
+  odin-linux:
+    name: Build Odin master (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - name: Build (static, same recipe as the Odin nightly)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.24 sh -c '
+            apk add --no-cache musl-dev llvm20-dev clang20 build-base git mold lz4               libxml2-static llvm20-static zlib-static zstd-static make &&
+            git config --global --add safe.directory /src &&
+            ./ci/build_linux_static.sh
+          '
+      - name: Pack
+        # A tarball keeps the executable bit, upload-artifact does not.
+        run: tar -czf odin.tar.gz odin base core shared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-linux
+          path: odin.tar.gz
+          retention-days: 1
+
   windows:
     name: Windows x64 -o:${{ matrix.opt }}
+    needs: odin-windows
     runs-on: windows-2025 # its image has cdb, for the debugger tests
     timeout-minutes: 30
     strategy:
@@ -19,14 +67,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get the latest Odin release
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-windows
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download -R odin-lang/Odin --pattern 'odin-windows-amd64-*.zip' -O odin.zip
-          Expand-Archive odin.zip "$env:RUNNER_TEMP\odin"
-          (Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1).DirectoryName >> $env:GITHUB_PATH
+          New-Item -ItemType Directory "$env:RUNNER_TEMP\odin" | Out-Null
+          tar -xzf "$env:RUNNER_TEMP\odin.tar.gz" -C "$env:RUNNER_TEMP\odin"
+          "$env:RUNNER_TEMP\odin" >> $env:GITHUB_PATH
 
       - name: Show the toolchain
         shell: pwsh
@@ -66,6 +117,7 @@ jobs:
 
   linux:
     name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
+    needs: odin-linux
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -82,13 +134,15 @@ jobs:
       - name: Install the patch linker and the debuggers
         run: sudo apt-get update && sudo apt-get install -y lld gdb lldb
 
-      - name: Get the latest Odin release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-linux
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
         run: |
-          gh release download -R odin-lang/Odin --pattern 'odin-linux-amd64-*.tar.gz' -O odin.tar.gz
-          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf odin.tar.gz -C "$RUNNER_TEMP/odin"
-          dirname "$(find "$RUNNER_TEMP/odin" -name odin -type f | head -n 1)" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
 
       - name: Show the toolchain
         run: |
