@@ -254,8 +254,9 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 }
 
 // Links `<stem>.dll` for `base` with lld-link, and writes its `<stem>.map`.
+// LIVEPATCH_LINKER has no effect on Windows.
 run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string, base: uintptr) -> Error {
-	lld_path, _ := filepath.join({ODIN_ROOT, "bin", "lld-link.exe"}, context.temp_allocator)
+	linker_path, _ := filepath.join({ODIN_ROOT, "bin", "lld-link.exe"}, context.temp_allocator)
 	dll_path := strings.concatenate({stem, ".dll"}, context.temp_allocator)
 	map_path := strings.concatenate({stem, ".map"}, context.temp_allocator)
 
@@ -276,7 +277,7 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
 	}
 
-	return run_linker_command({lld_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
+	return run_linker_command({linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
 }
 
 // Loads `<stem>.dll`, which must land at `base`, and reads its symbols from `<stem>.map`.

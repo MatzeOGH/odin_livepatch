@@ -54,7 +54,7 @@ run_linker_command :: proc(command: []string) -> Error {
 		return Load_Failed{kind = .Cannot_Run_Linker, os_error = exec_err}
 	}
 	if state.exit_code != 0 {
-		return Load_Failed{kind = .Link_Failed, output = error_text(len(stderr) > 0 ? string(stderr) : string(stdout))}
+		return Load_Failed{kind = .Link_Failed, output = error_text(process_output(stdout, stderr))}
 	}
 	return nil
 }

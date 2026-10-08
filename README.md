@@ -81,7 +81,7 @@ needs a setup for this signal. See [Linux debugger setup](#linux-debugger-setup)
 | `LIVEPATCH` | `false` | Turns the package on. |
 | `LIVEPATCH_TIMINGS` | `false` | Prints the time of each phase to stderr. |
 | `LIVEPATCH_TOAST` | `false` | Shows a notification after each patch. |
-| `LIVEPATCH_LD` | `""` | Linux: the linker of the patch module. See [Linkers](#linkers). |
+| `LIVEPATCH_LINKER` | `"default"` | The linker of the patch module, with the names of `-linker:`. See [Linkers](#linkers). |
 
 ## What a patch keeps
 
@@ -249,22 +249,26 @@ In an optimized build, the debugger can show some locals as optimized out.
 | `msvc` (MSVC `link.exe`) | Yes |
 | `lld` | Yes |
 
-Each linker needs `/OPT:NOREF /OPT:NOICF /MAP`. To use radlink, do not set `-linker:`. Odin
+Each linker needs `/OPT:NOREF /OPT:NOICF /MAP`. To use radlink, use `-linker:default`. Odin
 rejects `-linker:radlink` on Windows ("not supported on this platform"), but the default is
 radlink.
 
-`patch()` always links the patch DLL with `lld-link.exe` from the Odin install that built
-the exe. MSVC is not necessary for the patch.
+The example scripts select the linker of the exe and of the patch with one value, `LINKER`.
+They give it to `-linker:` and to `-define:LIVEPATCH_LINKER`. Set `LINKER` in the script, or in
+the environment before you build the exe.
+
+**Windows patch DLL:** `patch()` always links it with `lld-link.exe` from the Odin install that
+built the exe. `LIVEPATCH_LINKER` has no effect. MSVC is not necessary for the patch.
 
 **Linux exe:** any linker that Odin uses works (GNU `ld`, `lld`, `mold`), as a PIE or with
 `-reloc-mode:static`. A stripped exe or a fully static exe (`-static`) does not work.
 
-**Linux patch module:** `patch()` links it with lld, mold, or GNU `ld`. To select one, set
-`-define:LIVEPATCH_LD=<linker>` in the build script, or set the `LIVEPATCH_LD` environment
-variable. The environment variable overrides the define. `patch()` reads it on each patch.
-The value is a name to find on `PATH`, such as `mold` or `ld.lld-18`, or a full path.
+**Linux patch module:** `patch()` links it with lld, mold, or GNU `ld`. `LIVEPATCH_LINKER=lld`
+selects `ld.lld`, and `mold` selects `mold`. Another value is a name to find on `PATH`, such
+as `ld.lld-18`, or a full path.
 
-Without a value, `patch()` uses the first of `ld.lld`, `mold`, and `ld` that is on `PATH`.
+With `default`, `patch()` uses the first of `ld.lld`, `mold`, and `ld` that is on `PATH`.
+`patch()` finds the linker on the first patch, and uses it for each later patch.
 
 `patch()` runs the linker with `--version` to get its kind and its flags. GNU gold and other
 linkers are not used. If no known linker is found, `patch()` fails with `Load_Failed`.

@@ -1,6 +1,7 @@
 #+build linux amd64
 package livepatch
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -450,15 +451,8 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 	return symbol_addr, symbol_addr != nil
 }
 
-// The linker of the patch module: a name to find on PATH, or a path. The environment
-// variable LIVEPATCH_LD overrides it. Empty: the first of LINKER_SEARCH that is on PATH.
-LIVEPATCH_LD :: #config(LIVEPATCH_LD, "")
-
 LINKER_SEARCH :: [?]string{"ld.lld", "mold", "ld"}
 
-// The linker kinds that patch() knows, with their flags. %x is the base address of the patch
-// module. The first kind whose text is in the first line of `--version` is used. mold prints
-// "compatible with GNU ld", so it comes before GNU ld.
 Linker_Kind :: struct {
 	version, flags: string,
 }
@@ -481,7 +475,7 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 	linker_path, flags, found := find_linker()
 	if !found {
 		return Load_Failed{kind = .Cannot_Run_Linker, output = error_text(
-			"no known linker found: install lld, mold or GNU ld, or set LIVEPATCH_LD")}
+			"no known linker found: install lld, mold or GNU ld, or set LIVEPATCH_LINKER in the build script")}
 	}
 	elf_path := strings.concatenate({stem, ".elf"}, context.temp_allocator)
 
@@ -502,9 +496,14 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 	return run_linker_command({linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
 }
 
-// The linker to use and its flags
+@(private = "file")
+found_linker_path, found_linker_flags: string
+
 find_linker :: proc() -> (path, flags: string, ok: bool) {
-	choice := os.lookup_env("LIVEPATCH_LD", context.temp_allocator) or_else LIVEPATCH_LD
+	if found_linker_path != "" {
+		return found_linker_path, found_linker_flags, true
+	}
+	choice := "" if LIVEPATCH_LINKER == "default" else "ld.lld" if LIVEPATCH_LINKER == "lld" else LIVEPATCH_LINKER
 	search := LINKER_SEARCH
 	names := []string{choice} if choice != "" else search[:]
 	for name in names {
@@ -517,7 +516,9 @@ find_linker :: proc() -> (path, flags: string, ok: bool) {
 		first_line, _, _ := strings.partition(string(stdout), "\n")
 		for kind in LINKER_KINDS {
 			if strings.contains(first_line, kind.version) {
-				return path, kind.flags, true
+				found_linker_path = strings.clone(path, runtime.heap_allocator())
+				found_linker_flags = kind.flags
+				return found_linker_path, found_linker_flags, true
 			}
 		}
 	}

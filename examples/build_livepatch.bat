@@ -15,9 +15,15 @@ rem debug info, and the build is faster.
 set DEBUG=-debug
 if "%LIVEPATCH_DEBUGGER%"=="0" set DEBUG=
 
+rem The linker of the exe: default (radlink), lld or msvc. Do not use radlink as the value:
+rem Odin rejects -linker:radlink on Windows, but default is radlink. The patch DLL always
+rem links with lld-link.
+if not defined LINKER set LINKER=default
+
 rem Mandatory: -use-separate-modules and -define:LIVEPATCH=true.
 rem Optional: the -o: level, LIVEPATCH_TIMINGS, and LIVEPATCH_TOAST.
 set FLAGS=%DEBUG% -o:none -use-separate-modules -define:LIVEPATCH=true -define:LIVEPATCH_TIMINGS=true -define:LIVEPATCH_TOAST=true
+set FLAGS=%FLAGS% -linker:%LINKER% -define:LIVEPATCH_LINKER=%LINKER%
 
 rem Mandatory for the exe link. /MAP writes demo.map. patch() reads the address of each
 rem symbol from it, @static locals and file-private globals included. The PDB does not

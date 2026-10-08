@@ -1,4 +1,4 @@
-#+build windows amd64, linux amd64
+#+build windows amd64, linux amd64, darwin arm64
 package livepatch
 
 @(require) import "core:fmt"
@@ -15,6 +15,10 @@ LIVEPATCH_TIMINGS :: #config(LIVEPATCH_TIMINGS, false)
 
 // Shows a toast after each patch.
 LIVEPATCH_TOAST :: #config(LIVEPATCH_TOAST, false)
+
+// The linker of the patch: the same name as the Odin -linker: flag of the exe, such as "lld" or
+// "mold". The build script sets both from one value. A value with a "/" is the path of a linker.
+LIVEPATCH_LINKER :: #config(LIVEPATCH_LINKER, "default")
 
 // The object directory, in the exe directory. The watcher ignores it.
 PATCH_OUTPUT_DIRNAME :: "livepatch"

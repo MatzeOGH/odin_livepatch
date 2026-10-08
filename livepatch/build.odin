@@ -4,6 +4,7 @@ package livepatch
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
+import "core:strings"
 
 build_command :: proc(script, output_dir: string) -> []string {
 	command := []string{"cmd", "/c", script, output_dir} when ODIN_OS == .Windows else []string{"/bin/sh", script, output_dir}
@@ -38,25 +39,46 @@ run_build :: proc(build_script, output_dir: string) -> Error {
 		}
 	}
 
-	// If ODIN is not set, the script uses the compiler that built this exe.
-	if _, found := os.lookup_env("ODIN", context.temp_allocator); !found {
-		if odin, join_err := filepath.join({ODIN_ROOT, ODIN_EXE_NAME}, context.temp_allocator); join_err == nil {
-			_ = os.set_env("ODIN", odin)
-		}
-	}
-	// Without a debugger, the patch does not need debug info, so the script can leave out -debug.
-	_ = os.set_env("LIVEPATCH_DEBUGGER", debugger_attached() ? "1" : "0")
-
 	desc := os.Process_Desc{
 		command = build_command(script, output_dir),
+		env     = build_env(),
 	}
 	state, stdout, stderr, exec_err := os.process_exec(desc, context.temp_allocator)
 	if exec_err != nil {
 		return Build_Failed{kind = .Cannot_Run_Script, os_error = exec_err}
 	}
 	if state.exit_code != 0 {
-		out := len(stdout) > 0 ? string(stdout) : string(stderr)
-		return Build_Failed{kind = .Script_Failed, exit_code = state.exit_code, output = error_text(out)}
+		return Build_Failed{kind = .Script_Failed, exit_code = state.exit_code, output = error_text(process_output(stdout, stderr))}
 	}
 	return nil
+}
+
+build_env :: proc() -> []string {
+	env, _ := os.environ(context.temp_allocator)
+	result := make([dynamic]string, 0, len(env) + 2, context.temp_allocator)
+	has_odin := false
+	for entry in env {
+		key, _, _ := strings.partition(entry, "=")
+		if strings.equal_fold(key, "LIVEPATCH_DEBUGGER") {
+			continue
+		}
+		has_odin ||= strings.equal_fold(key, "ODIN")
+		append(&result, entry)
+	}
+	// Without a debugger, the patch does not need debug info, so the script can leave out -debug.
+	append(&result, debugger_attached() ? "LIVEPATCH_DEBUGGER=1" : "LIVEPATCH_DEBUGGER=0")
+	// If ODIN is not set, the script uses the compiler that built this exe.
+	if !has_odin {
+		if odin, join_err := filepath.join({ODIN_ROOT, ODIN_EXE_NAME}, context.temp_allocator); join_err == nil {
+			append(&result, strings.concatenate({"ODIN=", odin}, context.temp_allocator))
+		}
+	}
+	return result[:]
+}
+
+process_output :: proc(stdout, stderr: []u8) -> string {
+	if len(stdout) == 0 || len(stderr) == 0 {
+		return string(stdout) if len(stderr) == 0 else string(stderr)
+	}
+	return strings.concatenate({string(stdout), "\n", string(stderr)}, context.temp_allocator)
 }
