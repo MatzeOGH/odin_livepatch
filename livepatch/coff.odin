@@ -5,6 +5,7 @@ package livepatch
 
 import pe "core:debug/pe"
 import "core:encoding/base64"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -49,11 +50,11 @@ Coff_View :: struct {
 	symbol_count:           int,
 }
 
-coff_section_header :: proc  "contextless" (data: []byte, section_headers_offset, section_index: int) -> ^pe.Section_Header32 {
+coff_section_header :: proc "contextless" (data: []byte, section_headers_offset, section_index: int) -> ^pe.Section_Header32 {
 	return (^pe.Section_Header32)(raw_data(data[section_headers_offset + section_index * SECTION_HDR_SIZE:]))
 }
 
-coff_symbol_at :: proc  "contextless" (data: []byte, symtab_offset, symbol_index: int) -> ^Coff_Symbol {
+coff_symbol_at :: proc "contextless" (data: []byte, symtab_offset, symbol_index: int) -> ^Coff_Symbol {
 	return (^Coff_Symbol)(raw_data(data[symtab_offset + symbol_index * pe.COFF_SYMBOL_SIZE:]))
 }
 
@@ -126,7 +127,7 @@ coff_section_relocs :: proc "contextless" (data: []byte, section_headers_offset,
 	if reloc_count <= 0 || start + reloc_count * RELOC_SIZE > len(data) {
 		return {}
 	}
-	return ([^]Coff_Reloc)(raw_data(data[start:]))[:reloc_count]
+	return slice.reinterpret([]Coff_Reloc, data[start:][:reloc_count * RELOC_SIZE])
 }
 
 coff_weak_external_aux :: proc "contextless" (data: []byte, symtab_offset, symbol_index: int, symbol: ^Coff_Symbol) -> (aux: ^Coff_Aux_Weak_External, ok: bool) {
@@ -140,7 +141,7 @@ coff_weak_external_aux :: proc "contextless" (data: []byte, symtab_offset, symbo
 	return (^Coff_Aux_Weak_External)(raw_data(data[aux_offset:])), true
 }
 
-is_object_local :: proc (symbol: ^Coff_Symbol, name: string, section_name: string) -> bool {
+is_object_local :: proc(symbol: ^Coff_Symbol, name: string, section_name: string) -> bool {
 	if symbol.storage_class != .STATIC {
 		return false
 	}

@@ -3,6 +3,12 @@ package livepatch
 
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
+
+build_command :: proc(script, output_dir: string) -> []string {
+	command := []string{"cmd", "/c", script, output_dir} when ODIN_OS == .Windows else []string{"/bin/sh", script, output_dir}
+	return slice.clone(command, context.temp_allocator)
+}
 
 build_output_dir :: proc(allocator := context.temp_allocator) -> (dir: string, err: Error) {
 	exe_dir, exe_err := os.get_executable_directory(allocator)

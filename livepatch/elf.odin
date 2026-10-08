@@ -1,6 +1,7 @@
 #+build linux amd64
 package livepatch
 
+import "core:slice"
 import "core:strings"
 
 Elf64_Ehdr :: struct #packed {
@@ -46,7 +47,7 @@ Elf64_Phdr :: struct #packed {
 
 Elf64_Sym :: struct #packed {
 	name:  u32,
-	info:  u8,
+	info:  Elf_Symbol_Info,
 	other: u8,
 	shndx: u16,
 	value: u64,
@@ -55,8 +56,18 @@ Elf64_Sym :: struct #packed {
 
 Elf64_Rela :: struct #packed {
 	offset: u64,
-	info:   u64,
+	info:   Elf_Rela_Info,
 	addend: i64,
+}
+
+Elf_Symbol_Info :: bit_field u8 {
+	type:    u8 | 4,
+	binding: u8 | 4,
+}
+
+Elf_Rela_Info :: bit_field u64 {
+	type:   u32 | 32,
+	symbol: u32 | 32,
 }
 
 ET_REL  :: 1
@@ -120,14 +131,6 @@ R_X86_64_PC64          :: 24
 R_X86_64_GOTPCRELX     :: 41
 R_X86_64_REX_GOTPCRELX :: 42
 
-// ELF64_ST_BIND, ELF64_ST_TYPE, ELF64_ST_INFO, ELF64_R_SYM, ELF64_R_TYPE and ELF64_R_INFO of the spec
-elf_symbol_binding    :: #force_inline proc "contextless" (info: u8) -> u8 { return info >> 4 }
-elf_symbol_type       :: #force_inline proc "contextless" (info: u8) -> u8 { return info & 0xF }
-elf_symbol_info       :: #force_inline proc "contextless" (bind, type: u8) -> u8 { return bind << 4 | type & 0xF }
-elf_rela_symbol_index :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info >> 32) }
-elf_rela_type         :: #force_inline proc "contextless" (info: u64) -> u32 { return u32(info) }
-elf_rela_info         :: #force_inline proc "contextless" (sym, type: u32) -> u64 { return u64(sym) << 32 | u64(type) }
-
 Elf_View :: struct {
 	header:   ^Elf64_Ehdr,
 	sections: []Elf64_Shdr,
@@ -154,13 +157,13 @@ parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 	if section_headers_offset <= 0 || section_headers_offset + int(header.shnum) * size_of(Elf64_Shdr) > len(data) {
 		return
 	}
-	view.sections = ([^]Elf64_Shdr)(raw_data(data[section_headers_offset:]))[:header.shnum]
+	view.sections = slice.reinterpret([]Elf64_Shdr, data[section_headers_offset:][:int(header.shnum) * size_of(Elf64_Shdr)])
 	if header.phnum > 0 {
 		program_headers_offset := int(header.phoff)
 		if int(header.phentsize) != size_of(Elf64_Phdr) || program_headers_offset + int(header.phnum) * size_of(Elf64_Phdr) > len(data) {
 			return
 		}
-		view.segments = ([^]Elf64_Phdr)(raw_data(data[program_headers_offset:]))[:header.phnum]
+		view.segments = slice.reinterpret([]Elf64_Phdr, data[program_headers_offset:][:int(header.phnum) * size_of(Elf64_Phdr)])
 	}
 	view.shstrtab = elf_section_bytes(data, &view.sections[header.shstrndx]) or_return
 	for &section, section_index in view.sections {
@@ -170,7 +173,7 @@ parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 			}
 			symtab_bytes := elf_section_bytes(data, &section) or_return
 			view.symtab = section_index
-			view.syms = ([^]Elf64_Sym)(raw_data(symtab_bytes))[:len(symtab_bytes) / size_of(Elf64_Sym)]
+			view.syms = slice.reinterpret([]Elf64_Sym, symtab_bytes)
 			view.strtab = elf_section_bytes(data, &view.sections[section.link]) or_return
 			break
 		}
@@ -195,7 +198,7 @@ elf_section_relas :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> 
 	if len(bytes) % size_of(Elf64_Rela) != 0 {
 		return
 	}
-	return ([^]Elf64_Rela)(raw_data(bytes))[:len(bytes) / size_of(Elf64_Rela)], true
+	return slice.reinterpret([]Elf64_Rela, bytes), true
 }
 
 elf_string_at :: proc "contextless" (table: []u8, offset: u32) -> string {
@@ -250,7 +253,7 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 			// Not in memory
 			continue
 		}
-		sym_type := elf_symbol_type(sym.info)
+		sym_type := sym.info.type
 		if sym_type == STT_SECTION || sym_type == STT_FILE {
 			continue
 		}
