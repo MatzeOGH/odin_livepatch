@@ -19,8 +19,10 @@ $bp_commands = '".echo STOP; k 3; dv; g"'
 # a module lp_* loads, cdb runs cdb_on_load.txt, which sets the breakpoint in each module lp_*
 # (lm1m lists their names).
 # .foreach replaces only a whole token, so the name goes into the alias ModName first. A
-# .block expands the alias.
+# .block expands the alias in each iteration. ad deletes the alias of the last load first: else
+# cdb expands the old name once, when it reads the line.
 $on_load = @(
+    'ad /q ModName'
     ".foreach (PATCHMOD {lm1m m lp_*}) { aS ModName PATCHMOD; .block { bp ``$`{ModName}!main.odin:$line`` $bp_commands } }"
     'g'
 )

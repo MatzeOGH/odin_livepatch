@@ -83,6 +83,8 @@ A script sets breakpoints before the program starts: on procedures that only one
 | `debugger_values` | A struct local, a global before and after a patch changed it, the call stack, a conditional breakpoint in a loop, an array, and the arguments of a procedure that only the last patch adds, with a string. |
 | `debugger_line_only_in_patch` | A breakpoint on a source line that only the patches have code on: it must stop in v2 and again in v3. The exe has no code on that line or after it. |
 | `debugger_changed_proc` | A breakpoint on a source line of a procedure that the exe has and that each patch changes: it must stop in the body of the exe, then of v2, then of v3, and never in an old body. |
+| `debugger_stepping` | At a breakpoint on a call in `main`, which stays in the exe: a step into the called procedure must arrive in its newest body, through the jump from the old body into the patch. Then a step over a line, a local, and the return value when the procedure finishes. |
+| `debugger_kept_values` | The values that the code uses: a `@static`, which keeps its value across patches, a global that a patch adds and the next patch keeps, a `@thread_local` and a global of the exe. A patch module also has its own copies of these variables, which the code does not use. |
 
 When the debugger is not installed, the script skips the test. In CI (`CI` is set), a missing debugger is a failure. The log of each run is in the test directory: `cdb.log`, `gdb.log` or `lldb.log`.
 

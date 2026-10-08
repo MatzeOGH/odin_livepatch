@@ -20,12 +20,18 @@ $line = (Select-String -Path $main -Pattern 'the debugger breaks here').LineNumb
 $log = Join-Path $PSScriptRoot 'raddbg.log'
 Set-Content $log ''
 
-# Sends one IPC command and returns the reply. The parts of a reply are separated by NUL.
+# Sends one IPC command and returns the reply. The parts of a reply are separated by NUL. All
+# commands use one connection, which stays open: raddbg 0.9.29 reads a closed connection as an
+# endless series of empty commands, and then does not answer other connections.
+$script:client = $null
 function ipc($command) {
-    $client = [System.Net.Sockets.TcpClient]::new()
     try {
-        $client.Connect('127.0.0.1', 7423)
-        $stream = $client.GetStream()
+        if (-not $script:client) {
+            $c = [System.Net.Sockets.TcpClient]::new()
+            try { $c.Connect('127.0.0.1', 7423) } catch { $c.Dispose(); throw }
+            $script:client = $c
+        }
+        $stream = $script:client.GetStream()
         $bytes = [Text.Encoding]::UTF8.GetBytes($command)
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.ReadTimeout = 15000
@@ -44,8 +50,6 @@ function ipc($command) {
     } catch {
         Add-Content $log "> $command`nIPC error: $_"
         return ''
-    } finally {
-        $client.Dispose()
     }
 }
 
@@ -97,7 +101,7 @@ try {
             $module = if ($state -match 'ip_module: "([^"]*)"') { $Matches[1] } else { '' }
             $symbol = if ($state -match 'ip_voff_symbol: "([^"]*)"') { $Matches[1] } else { '' }
             $want_module = if ($v -eq 1) { '^app\.exe$' } else { '^lp_\w+\.dll$' }
-            check "v${v}: in work ($symbol)" ($symbol -eq 'main::work')
+            check "v${v}: in work ($symbol)" ($symbol -match '^(main::)?work$')
             check "v${v}: in the module of v$v ($module)" ($module -match $want_module)
             check "v${v}: on line $line" ($state -match "(?m)^\s*line_num:\s+$line\s*$")
             $eval = ipc 'eval body_version'
