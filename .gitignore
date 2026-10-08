@@ -25,3 +25,8 @@ tests/ci/*/watched/
 tests/ci/*/cdb.log
 tests/ci/*/cdb_commands.txt
 tests/ci/*/cdb_on_load.txt
+tests/ci/*/app
+tests/ci/*/gdb.log
+tests/ci/*/gdb_commands.txt
+tests/ci/*/lldb.log
+tests/ci/*/lldb_commands.txt

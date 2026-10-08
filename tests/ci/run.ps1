@@ -1,8 +1,24 @@
-# Runs each test in tests\ci, then builds it with LIVEPATCH=false.
+# Runs each test in tests\ci, then builds it with LIVEPATCH=false. Windows: build.bat and app.exe.
+# Linux: build.sh and app. A test that has no build script for this system is skipped.
 # OPT is the -o: level (default: none, minimal and speed). ODIN is the compiler (default: odin on PATH).
+# Linux: RELOC=static builds with -reloc-mode:static (default: a PIE).
 # In GitHub Actions, it also writes a table of the results to the job summary.
 # Usage: tests\ci\run.ps1 [test,...]   (default: each directory in tests\ci)
 param([string[]]$Tests = (Get-ChildItem $PSScriptRoot -Directory).Name)
+
+$script_name = if ($IsWindows) { 'build.bat' } else { 'build.sh' }
+$app_name = if ($IsWindows) { 'app.exe' } else { 'app' }
+
+# Deletes the output of an earlier run: objects from another system or a crashed run would go
+# into the next patch
+function clean($d) {
+    foreach ($old in 'livepatch', 'livepatch_mod') { Remove-Item -Recurse -Force -ErrorAction Ignore (Join-Path $d $old) }
+}
+
+# Runs the build script of test directory $d
+function build($d) {
+    if ($IsWindows) { & "$d\build.bat" } else { & sh "$d/build.sh" }
+}
 
 $opts = if ($env:OPT) { @($env:OPT) } else { @('none', 'minimal', 'speed') }
 $failed = @()
@@ -12,14 +28,16 @@ foreach ($opt in $opts) {
     $env:OPT = $opt
     foreach ($t in $Tests) {
         $d = Join-Path $PSScriptRoot $t
+        if (-not (Test-Path (Join-Path $d $script_name))) { continue }
         Write-Host "=== $t -o:$opt"
         $problems = @()
-        & "$d\build.bat"
+        clean $d
+        build $d
         if ($LASTEXITCODE -ne 0) {
             $problems += 'build failed'
         } else {
             # Tee: the output goes to the log, and the failed checks to the summary
-            & "$d\app.exe" | Tee-Object -Variable output | Out-Host
+            & (Join-Path $d $app_name) | Tee-Object -Variable output | Out-Host
             if ($LASTEXITCODE -ne 0) {
                 # Each failed check, with the version line (v1, v2, ...) above it
                 $version = ''
@@ -33,7 +51,7 @@ foreach ($opt in $opts) {
 
         # The code must also build with livepatch off
         $env:LIVEPATCH = 'false'
-        & "$d\build.bat"
+        build $d
         if ($LASTEXITCODE -ne 0) { $problems += 'LIVEPATCH=false build failed' }
         Remove-Item Env:LIVEPATCH
 

@@ -43,20 +43,21 @@ function expect($label, $pattern, $count = 1) {
     $found = ([regex]::Matches($text, "(?m)$pattern")).Count
     if ($found -ge $count) { Write-Host "  OK    $label" } else { Write-Host "  FAIL  $label (found $found of $count)"; $script:failed = $true }
 }
-# A local or an argument: optimized code (-o:minimal, -o:speed) keeps it in a register or
-# removes it, so cdb shows <value unavailable> or a stale value. Checked at -o:none only.
-function expect_value($label, $pattern) {
+# A local, an argument, or the frame of a patched caller: optimized code (-o:minimal, -o:speed)
+# keeps a value in a register or removes it, and can inline a caller. Then cdb shows
+# <value unavailable>, a stale value, or no frame. Checked at -o:none only.
+function expect_unoptimized($label, $pattern) {
     if ($env:OPT -and $env:OPT -ne 'none') { Write-Host "  SKIP  $label (-o:$env:OPT)"; return }
     expect $label $pattern
 }
 expect 'v2: stopped in the patch'           '^STOP v2\s*$'
-expect 'v2: in the patch module'            'lp_\w+!main::stop_v2'
-expect 'v2: caller body_v2 in the patch'    'lp_\w+!main::body_v2'
-expect_value 'v2: local n'                        '\bn = 0n20'
-expect_value 'v2: local doubled'                  '\bdoubled = 0n40'
+expect 'v2: in the patch module'            'lp_\w+!main::stop_v2 \['
+expect_unoptimized 'v2: caller body_v2 in the patch'    'lp_\w+!main::body_v2'
+expect_unoptimized 'v2: local n'                        '\bn = 0n20'
+expect_unoptimized 'v2: local doubled'                  '\bdoubled = 0n40'
 expect 'v3: stopped in the second patch'    '^STOP v3\s*$'
-expect 'v3: in the patch module'            'lp_\w+!main::stop_v3'
-expect_value 'v3: local tripled'                  '\btripled = 0n60'
+expect 'v3: in the patch module'            'lp_\w+!main::stop_v3 \['
+expect_unoptimized 'v3: local tripled'                  '\btripled = 0n60'
 expect 'called from main in the exe'        'app!main::main' 2
 expect 'the program finished'               'ALL OK'
 if ($failed) { exit 1 }

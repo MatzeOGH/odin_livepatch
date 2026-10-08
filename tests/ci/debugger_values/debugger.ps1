@@ -54,38 +54,39 @@ function expect($label, $pattern, $count = 1) {
     $found = ([regex]::Matches($text, "(?m)$pattern")).Count
     if ($found -ge $count) { Write-Host "  OK    $label" } else { Write-Host "  FAIL  $label (found $found of $count)"; $script:failed = $true }
 }
-# A local or an argument: optimized code (-o:minimal, -o:speed) keeps it in a register or
-# removes it, so cdb shows <value unavailable> or a stale value. Checked at -o:none only.
-function expect_value($label, $pattern) {
+# A local, an argument, or the frame of a patched caller: optimized code (-o:minimal, -o:speed)
+# keeps a value in a register or removes it, and can inline a caller. Then cdb shows
+# <value unavailable>, a stale value, or no frame. Checked at -o:none only.
+function expect_unoptimized($label, $pattern) {
     if ($env:OPT -and $env:OPT -ne 'none') { Write-Host "  SKIP  $label (-o:$env:OPT)"; return }
     expect $label $pattern
 }
 Write-Host 'v2: a struct, a global, the call stack'
-expect 'stopped in the patch module'        'lp_\w+!main::stop_v2'
-expect_value 'struct local p.x'                   '\bx\s*:\s*3\b'
-expect_value 'struct local p.y'                   '\by\s*:\s*6\b'
-expect_value 'local total'                        'total\s*:\s*9\b'
+expect 'stopped in the patch module'        'lp_\w+!main::stop_v2 \['
+expect_unoptimized 'struct local p.x'                   '\bx\s*:\s*3\b'
+expect_unoptimized 'struct local p.y'                   '\by\s*:\s*6\b'
+expect_unoptimized 'local total'                        'total\s*:\s*9\b'
 expect 'global counter, before the update'  '\s00000000`00000005\s*$'
-expect 'scene_v2 in the patch module'       'lp_\w+!main::scene_v2'
-expect 'drive in the stack'                 '!main::drive'
+expect_unoptimized 'scene_v2 in the patch module'       'lp_\w+!main::scene_v2'
+expect_unoptimized 'drive in the stack'                 '!main::drive'
 expect 'main of the exe in the stack'       'app!main::main'
 Write-Host 'v3: a conditional breakpoint in a loop, an array, the global as v2 left it'
 expect 'stopped once in the loop'           '^STOP v3 loop\s*$' 1
 expect 'loop variable i, as the argument'   '^rcx=0000000000000005\s*$'
-expect_value 'sum so far'                         '\bsum\s*:\s*15\b'
+expect_unoptimized 'sum so far'                         '\bsum\s*:\s*15\b'
 expect 'stopped after the loop'             '^STOP v3 end\s*$'
-expect_value 'array values[0]'                    '\[0\]\s*:\s*66\b'
-expect_value 'array values[1]'                    '\[1\]\s*:\s*1\b'
-expect_value 'array values[2]'                    '\[2\]\s*:\s*14\b'
-expect_value 'local total'                        'total\s*:\s*67\b'
+expect_unoptimized 'array values[0]'                    '\[0\]\s*:\s*66\b'
+expect_unoptimized 'array values[1]'                    '\[1\]\s*:\s*1\b'
+expect_unoptimized 'array values[2]'                    '\[2\]\s*:\s*14\b'
+expect_unoptimized 'local total'                        'total\s*:\s*67\b'
 expect 'global counter, as v2 left it'      '\s00000000`0000000e\s*$'
 Write-Host 'v4: a procedure that only this patch has, with a string argument'
-expect 'stopped in the patch module'        'lp_\w+!main::stop_v4'
-expect 'added_helper in the stack'          'lp_\w+!main::added_helper'
-expect_value 'argument n'                         '\bn\s*:\s*3\b'
-expect_value 'string argument label: length'      '`[0-9a-f]{8}\s+00000000`00000004\s*$'
-expect_value 'string argument label: text'        '"four"'
-expect_value 'local doubled'                      'doubled\s*:\s*12\b'
+expect 'stopped in the patch module'        'lp_\w+!main::stop_v4 \['
+expect_unoptimized 'added_helper in the stack'          'lp_\w+!main::added_helper'
+expect_unoptimized 'argument n'                         '\bn\s*:\s*3\b'
+expect_unoptimized 'string argument label: length'      '`[0-9a-f]{8}\s+00000000`00000004\s*$'
+expect_unoptimized 'string argument label: text'        '"four"'
+expect_unoptimized 'local doubled'                      'doubled\s*:\s*12\b'
 expect 'the program finished'               'ALL OK'
 $loops = ([regex]::Matches($text, '(?m)^STOP v3 loop\s*$')).Count
 if ($loops -ne 1) { Write-Host "  FAIL  the loop breakpoint stopped $loops times, not 1"; $failed = $true }

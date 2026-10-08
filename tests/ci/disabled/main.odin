@@ -1,6 +1,6 @@
 package main
 
-// With LIVEPATCH=false (build.bat sets it), the API compiles and does nothing: patch() returns
+// With LIVEPATCH=false (the build script sets it), the API compiles and does nothing: patch() returns
 // nil, the old code keeps running, and the watcher reports no change.
 
 import lp "../../../livepatch"
@@ -19,7 +19,7 @@ main :: proc() {
 		check("patch", patch_to(v), nil)
 		check("value: still v1", value(), 1)
 	}
-	check("patch_start", lp.patch_start("build.bat"), nil)
+	check("patch_start", lp.patch_start(BUILD_SCRIPT), nil)
 	finished, err := lp.patch_poll()
 	check("patch_poll: nothing", finished || err != nil, false)
 	w, werr := lp.watch_start(".")
@@ -32,6 +32,9 @@ main :: proc() {
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
 
+// The build script that patch() runs
+BUILD_SCRIPT :: "build.bat" when ODIN_OS == .Windows else "build.sh"
+
 failures: int
 
 check :: proc(label: string, got, want: $T) {
@@ -42,9 +45,9 @@ check :: proc(label: string, got, want: $T) {
 	fmt.printfln("  %-44s %v (want %v) %s", label, got, want, ok ? "OK" : "FAIL")
 }
 
-// Builds version v and patches it in. patch() runs build.bat with the environment of this process.
+// Builds version v and patches it in. patch() runs the build script with the environment of this process.
 patch_to :: proc(v: int) -> lp.Error {
 	fmt.printfln("v%d", v)
 	os.set_env("VERSION", fmt.tprint(v))
-	return lp.patch("build.bat")
+	return lp.patch(BUILD_SCRIPT)
 }

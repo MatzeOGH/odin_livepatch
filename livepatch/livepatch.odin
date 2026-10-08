@@ -93,14 +93,14 @@ when LIVEPATCH {
 
 		output_dir := build_output_dir() or_return
 
+		remove_objects(output_dir)
 		phase_start := time.tick_now()
-		build_start := time.now()
 		run_build(build_script, output_dir) or_return
 		pending.build_time = time.tick_since(phase_start)
 
 		phase_start = time.tick_now()
 		read_ok: bool
-		pending.objects, read_ok = read_all(output_dir, build_start)
+		pending.objects, read_ok = read_all(output_dir)
 		if !read_ok || len(pending.objects) == 0 {
 			return pending, No_Objects_Mapped{}
 		}

@@ -25,13 +25,17 @@ drive :: proc() -> int {
 	return scene(3)
 }
 
+// The debugger stops in the stop procedures. Each writes this global: at -o:speed, LLVM removes
+// a call to a procedure that does nothing.
+stops: int
+
 when VERSION == 1 {
 	scene :: proc(n: int) -> int {
 		return n
 	}
 } else when VERSION == 2 {
 	// debugger.ps1 stops in stop_v2 and reads the locals of scene_v2
-	stop_v2 :: #force_no_inline proc() {}
+	stop_v2 :: #force_no_inline proc() { stops += 1 }
 	scene_v2 :: proc(n: int) -> int {
 		p := Point{n, n * 2}
 		total := p.x + p.y
@@ -44,8 +48,8 @@ when VERSION == 1 {
 	}
 } else when VERSION == 3 {
 	// debugger.ps1 stops in loop_v3 only when i is 5, and in stop_v3 after the loop
-	loop_v3 :: #force_no_inline proc(i: int) {}
-	stop_v3 :: #force_no_inline proc() {}
+	loop_v3 :: #force_no_inline proc(i: int) { stops += 1 }
+	stop_v3 :: #force_no_inline proc() { stops += 1 }
 	scene_v3 :: proc(n: int) -> int {
 		sum := 0
 		for i in 0 ..< 12 {
@@ -62,7 +66,7 @@ when VERSION == 1 {
 	}
 } else {
 	// debugger.ps1 stops in stop_v4 and reads the arguments and locals of added_helper
-	stop_v4 :: #force_no_inline proc() {}
+	stop_v4 :: #force_no_inline proc() { stops += 1 }
 	added_helper :: proc(n: int, label: string) -> int {
 		doubled := n * len(label)
 		stop_v4()
@@ -85,6 +89,9 @@ checks :: proc(v: int) {
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
 
+// The build script that patch() runs
+BUILD_SCRIPT :: "build.bat" when ODIN_OS == .Windows else "build.sh"
+
 failures: int
 
 check :: proc(label: string, got, want: $T) {
@@ -95,11 +102,11 @@ check :: proc(label: string, got, want: $T) {
 	fmt.printfln("  %-44s %v (want %v) %s", label, got, want, ok ? "OK" : "FAIL")
 }
 
-// Builds version v and patches it in. patch() runs build.bat with the environment of this process.
+// Builds version v and patches it in. patch() runs the build script with the environment of this process.
 patch_to :: proc(v: int) -> lp.Error {
 	fmt.printfln("v%d", v)
 	os.set_env("VERSION", fmt.tprint(v))
-	return lp.patch("build.bat")
+	return lp.patch(BUILD_SCRIPT)
 }
 
 // main stays in its v1 body through all patches, so it does no checks itself. At -o:speed,

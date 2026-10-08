@@ -40,6 +40,52 @@ jobs:
         run: tests\ci\run.ps1
 
       - name: Debugger tests (cdb)
-        if: success() || failure() # also when the tests failed
+        # Only at -o:none: optimized code removes the locals and inlines the frames that the
+        # debugger tests read. Also when the tests failed.
+        if: matrix.opt == 'none' && (success() || failure())
         shell: pwsh
         run: tests\ci\run_debugger.ps1
+
+  linux:
+    name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each -o: level and each relocation mode reports on its own
+      matrix:
+        opt: [none, minimal, speed]
+        reloc: [pie, static] # static: -reloc-mode:static
+    env:
+      OPT: ${{ matrix.opt }}
+      RELOC: ${{ matrix.reloc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the patch linker and the debuggers
+        run: sudo apt-get update && sudo apt-get install -y lld gdb lldb
+
+      - name: Get the latest Odin release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R odin-lang/Odin --pattern 'odin-linux-amd64-*.tar.gz' -O odin.tar.gz
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf odin.tar.gz -C "$RUNNER_TEMP/odin"
+          dirname "$(find "$RUNNER_TEMP/odin" -name odin -type f | head -n 1)" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          odin version
+          ld.lld --version
+          gdb --version | head -n 1
+          lldb --version
+
+      - name: Tests
+        shell: pwsh
+        run: tests/ci/run.ps1
+
+      - name: Debugger tests (gdb, lldb)
+        # Only at -o:none: optimized code removes the locals and inlines the frames that the
+        # debugger tests read. Also when the tests failed.
+        if: matrix.opt == 'none' && (success() || failure())
+        shell: pwsh
+        run: tests/ci/run_debugger.ps1
