@@ -18,7 +18,6 @@ Error :: union {
 	Build_Failed,
 	No_Map,                 // the exe was linked without /MAP
 	No_Objects_Mapped,      // an object could not be read or rewritten
-	Too_Few_Objects,        // -use-separate-modules is missing
 	Unresolved_Symbol,
 	Global_Needs_Init,      // a global that the patch adds gets its value from code at startup
 	Global_Grew,            // a global stored by value is larger in the patch than its storage (Linux)
@@ -62,7 +61,6 @@ Build_Error_Kind :: enum {
 
 No_Map            :: struct {}
 No_Objects_Mapped :: struct {}
-Too_Few_Objects   :: struct {count: int}
 Unresolved_Symbol :: struct {name: string, object: string}
 Global_Needs_Init :: struct {name: string}
 Global_Grew       :: struct {name: string, old_size, new_size: int}

@@ -6,7 +6,7 @@ if not defined ODIN set ODIN=odin
 if not defined OPT set OPT=none
 if not defined VERSION set VERSION=1
 if not defined LIVEPATCH set LIVEPATCH=true
-rem The exe always needs -debug: patch() reads the address of each symbol from its PDB.
+rem patch() sets LIVEPATCH_DEBUGGER=0 when no debugger is attached. Then the patch needs no debug info.
 set DEBUG=-debug
 if not "%~1"=="" if "%LIVEPATCH_DEBUGGER%"=="0" set DEBUG=
 set FLAGS=%DEBUG% -o:%OPT% -define:VERSION=%VERSION% -use-separate-modules -define:LIVEPATCH=%LIVEPATCH%

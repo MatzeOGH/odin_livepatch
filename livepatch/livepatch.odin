@@ -104,9 +104,6 @@ when LIVEPATCH {
 		if !read_ok || len(pending.objects) == 0 {
 			return pending, No_Objects_Mapped{}
 		}
-		if len(pending.objects) < 2 {
-			return pending, Too_Few_Objects{len(pending.objects)}
-		}
 
 		pending.merged = merge_symbols(pending.objects)
 		if grew := pending.merged.grew; grew.name != "" {

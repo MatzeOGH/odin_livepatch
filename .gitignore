@@ -22,3 +22,5 @@ tests/*/lldb.log
 tests/*/gdb.log
 tests/ci/*/livepatch/
 tests/ci/*/watched/
+tests/ci/*/cdb.log
+tests/ci/*/cdb_commands.txt

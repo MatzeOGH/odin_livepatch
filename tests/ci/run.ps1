@@ -1,9 +1,9 @@
 # Runs each test in tests\ci, then builds it with LIVEPATCH=false.
-# OPT is the -o: level (default: both none and speed). ODIN is the compiler (default: odin on PATH).
+# OPT is the -o: level (default: none, minimal and speed). ODIN is the compiler (default: odin on PATH).
 # Usage: tests\ci\run.ps1 [test,...]   (default: each directory in tests\ci)
 param([string[]]$Tests = (Get-ChildItem $PSScriptRoot -Directory).Name)
 
-$opts = if ($env:OPT) { @($env:OPT) } else { @('none', 'speed') }
+$opts = if ($env:OPT) { @($env:OPT) } else { @('none', 'minimal', 'speed') }
 $failed = @()
 Remove-Item Env:VERSION, Env:LIVEPATCH -ErrorAction Ignore # the exe must have version 1
 foreach ($opt in $opts) {

@@ -5,10 +5,10 @@ Each directory here is one test. GitHub Actions runs all of them (`.github/workf
 ## Rules for a test
 
 - A test checks one feature. The first comment in `main.odin` tells which.
-- A test has only its own files: `build.bat` and `main.odin` (and more `.odin` files if the feature needs them). It does not use a shared script.
+- A test has only its own files: `build.bat` and `main.odin`, and more files or packages if the feature needs them. It does not use a shared script. Most tests have the same `build.bat`. A test that needs other build flags changes its own copy.
 - `VERSION :: #config(VERSION, 1)` selects the version of the code. Use `when VERSION == N` for code that changes shape. The source files do not change during a test.
 - The exe is version 1. The test then applies version 2 and version 3 as patches, or more. Two patches find errors in a patch that works only one time.
-- Each test runs at `-o:none` and at `-o:speed`. Each test must also build with `LIVEPATCH=false`.
+- Each test runs at `-o:none`, `-o:minimal` and `-o:speed`. Each test must also build with `LIVEPATCH=false`.
 - The functional tests do not use the source watcher. The `watcher` test checks it on its own.
 
 To add a test, copy a directory and change `main.odin`. The runner and the workflow find the new directory.
@@ -23,7 +23,7 @@ A test that must do more between the patches, for example to check a rejected pa
 
 ## Run the tests
 
-All tests, at both `-o:` levels:
+All tests, at the three `-o:` levels:
 
 ```powershell
 tests\ci\run.ps1
@@ -50,6 +50,17 @@ tests\ci\change_proc\app.exe
 
 `ODIN` is the compiler (default: `odin` on the PATH). If you set `ODIN_ROOT`, it must point to the same Odin as the compiler. A different `ODIN_ROOT` crashes the compiler.
 
+## Debugger tests
+
+`tests\ci\run_debugger.ps1` runs each test that has a `debugger.ps1` under cdb, at `-o:none` only. Optimized code shows locals as optimized out. `run.ps1` runs these tests too, but without a debugger. `debugger.ps1` sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch module of that version, and cdb must read the values there. The script then compares the cdb output with the expected values, as the gdb and lldb scripts of the Linux suites do.
+
+| Test | What cdb must read |
+| --- | --- |
+| `debugger_breakpoints` | A stop in each of two patches, the locals of the patched caller, and the call stack back to `main` in the exe. |
+| `debugger_values` | A struct local, a global before and after a patch changed it, the call stack, a conditional breakpoint in a loop, an array, and the arguments of a procedure that only the last patch adds, with a string. |
+
+cdb is in the Debugging Tools for Windows, a feature of the Windows SDK. When cdb is not installed, `debugger.ps1` skips the test. In CI (`$env:CI`), a missing cdb is a failure. The log of each run is `cdb.log` in the test directory.
+
 ## CI
 
-The workflow runs on `windows-2022`, with one job for each `-o:` level. It uses the latest release of Odin, not Odin master.
+The workflow runs on `windows-2025`. It has one job for each `-o:` level, and one job for the debugger tests (`Windows x64 debugger (cdb)`). The image of this runner has cdb. The workflow uses the latest release of Odin, not Odin master. The debugger job uploads the cdb logs.
