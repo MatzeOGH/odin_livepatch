@@ -16,9 +16,11 @@ To add a test, copy a directory and change `main.odin`. The runner and the workf
 
 ## The harness
 
-The end of each `main.odin` is the same harness: `check`, `patch_to` and `main`. A test defines `LAST_VERSION`, `setup` and `checks(v)`. `main` calls `setup` one time, then `checks(1)`, and then patches to each version and calls `checks(v)` again.
+The end of each `main.odin` is the same harness: `check`, `patch_to`, `version_check` and `main`. A test defines `LAST_VERSION`, `setup` and `checks(v)`. `main` calls `setup` one time, then `checks(1)`, and then patches to each version and calls `checks(v)` again. After each `checks(v)`, `version_check(v)` checks that the running code is version `v`. A patch that does not apply then fails, and does not pass with the old code.
 
 `main` stays in its version 1 body through all patches, so it does no checks itself. At `-o:speed`, LLVM can put a result of version 1 code into `main` as a constant. `checks` is a new call after each patch, so it runs the new body. A loop that runs through the patches has the same problem: it must read a global or a `@thread_local`, so that LLVM cannot fold the result.
+
+At `-o:speed`, LLVM also removes a call to a procedure that does nothing. Thus `checks` must do something in each version, also in version 1. If the `checks` of version 1 is empty, `main` does not call it, and the `checks` of the later versions never run.
 
 A test that must do more between the patches, for example to check a rejected patch, has its own `main`.
 
@@ -73,12 +75,14 @@ Before each test, the runner deletes the `livepatch/` and `livepatch_mod/` direc
 | Linux | gdb | `debugger_gdb.sh` |
 | Linux | lldb | `debugger_lldb.sh` |
 
-A script sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch of that version, and the debugger must read the values there. The script then compares the debugger output with the expected values. At each level, the stops, `main` in the stack and the globals must be correct. Locals, arguments and the frames of patched callers are checked at `-o:none` only: optimized code keeps values in registers or removes them, and can inline a caller. A stop procedure writes a global: at `-o:speed`, LLVM removes a call to a procedure that does nothing.
+A script sets breakpoints before the program starts: on procedures that only one patch has, or on source lines, as a user does. Each breakpoint must stop in the code of the right version, and the debugger must read the values there. A script finds the line of a source-line breakpoint by the comment `// the debugger breaks here` in `main.odin`. The script then compares the debugger output with the expected values. At each level, the stops, `main` in the stack and the globals must be correct. Locals, arguments and the frames of patched callers are checked at `-o:none` only: optimized code keeps values in registers or removes them, and can inline a caller. A stop procedure writes a global: at `-o:speed`, LLVM removes a call to a procedure that does nothing.
 
 | Test | What the debugger must read |
 | --- | --- |
 | `debugger_breakpoints` | A stop in each of two patches, the locals of the patched caller, and the call stack back to `main` in the exe. |
 | `debugger_values` | A struct local, a global before and after a patch changed it, the call stack, a conditional breakpoint in a loop, an array, and the arguments of a procedure that only the last patch adds, with a string. |
+| `debugger_line_only_in_patch` | A breakpoint on a source line that only the patches have code on: it must stop in v2 and again in v3. The exe has no code on that line or after it. |
+| `debugger_changed_proc` | A breakpoint on a source line of a procedure that the exe has and that each patch changes: it must stop in the body of the exe, then of v2, then of v3, and never in an old body. |
 
 When the debugger is not installed, the script skips the test. In CI (`CI` is set), a missing debugger is a failure. The log of each run is in the test directory: `cdb.log`, `gdb.log` or `lldb.log`.
 

@@ -1,47 +1,28 @@
 package main
 
-// A type that only patches have: v2 adds it, v3 makes it larger, v4 smaller again. The post
-// hook sees only the changes of v3 and v4: a new type is not a change.
+// Under a debugger (debugger.ps1, debugger_gdb.sh, debugger_lldb.sh): a breakpoint on a source
+// line of a procedure that the exe has and that each patch changes, set before the program starts.
+// It must stop in the body of the exe, then in the body of v2, then in the body of v3, and never
+// in an old body. The local body_version tells which body stopped. Without a debugger, the test
+// checks the values only.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 4
+LAST_VERSION :: 3
 
-thing_changes: int
-
-@(link_section=lp.HOOK_POST_SECTION, export) _post := proc(changed: []lp.Type_Change) {
-	for change in changed {
-		if change.name == "Thing" {
-			thing_changes += 1
-		}
-	}
-}
-
-when VERSION == 1 {
-	thing_size :: proc() -> int {
-		return 0
-	}
-} else {
-	when VERSION == 3 {
-		Thing :: struct { a, b: int }
-	} else {
-		Thing :: struct { a: int }
-	}
-	thing_size :: proc() -> int {
-		return size_of(Thing) + 0 * len(fmt.tprint(Thing{}))
-	}
+work :: proc(n: int) -> int {
+	body_version := VERSION
+	scaled := n * VERSION
+	return scaled + body_version // the debugger breaks here
 }
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	sizes := [?]int{0, 8, 16, 8}
-	changes := [?]int{0, 0, 1, 2}
-	check("size of Thing", thing_size(), sizes[v - 1])
-	check("hook saw Thing change", thing_changes, changes[v - 1])
+	check("work(10)", work(10), 10 * v + v)
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
@@ -85,5 +66,6 @@ main :: proc() {
 		checks(v)
 		version_check(v)
 	}
+	fmt.println(failures == 0 ? "ALL OK" : "FAILED")
 	os.exit(failures == 0 ? 0 : 1)
 }

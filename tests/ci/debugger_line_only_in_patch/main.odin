@@ -1,47 +1,27 @@
 package main
 
-// A type that only patches have: v2 adds it, v3 makes it larger, v4 smaller again. The post
-// hook sees only the changes of v3 and v4: a new type is not a change.
+// Under a debugger (debugger.ps1, debugger_gdb.sh, debugger_lldb.sh): a breakpoint on a source
+// line that only the patches have code on, set before the program starts. It must stop in v2, and
+// again in v3: after the first patch, the debugger must also learn of the next one. The patch code
+// is the last code in this file, so the exe has no code on that line or after it, and a debugger
+// cannot move the breakpoint into the exe. Without a debugger, the test checks the values only.
 
 import lp "../../../livepatch"
 import "core:fmt"
 import "core:os"
 
 VERSION :: #config(VERSION, 1)
-LAST_VERSION :: 4
-
-thing_changes: int
-
-@(link_section=lp.HOOK_POST_SECTION, export) _post := proc(changed: []lp.Type_Change) {
-	for change in changed {
-		if change.name == "Thing" {
-			thing_changes += 1
-		}
-	}
-}
-
-when VERSION == 1 {
-	thing_size :: proc() -> int {
-		return 0
-	}
-} else {
-	when VERSION == 3 {
-		Thing :: struct { a, b: int }
-	} else {
-		Thing :: struct { a: int }
-	}
-	thing_size :: proc() -> int {
-		return size_of(Thing) + 0 * len(fmt.tprint(Thing{}))
-	}
-}
+LAST_VERSION :: 3
 
 setup :: proc() {}
 
 checks :: proc(v: int) {
-	sizes := [?]int{0, 8, 16, 8}
-	changes := [?]int{0, 0, 1, 2}
-	check("size of Thing", thing_size(), sizes[v - 1])
-	check("hook saw Thing change", thing_changes, changes[v - 1])
+	when VERSION >= 2 {
+		check("added(20)", added(20), 40 + v)
+	} else {
+		// Not empty: at -o:speed, LLVM removes a call to an empty procedure, and the checks of v2 would never run
+		check("v1 has no added", v, 1)
+	}
 }
 
 // The test harness. Each test has its own copy. A test defines LAST_VERSION, setup and checks, or its own main.
@@ -85,5 +65,16 @@ main :: proc() {
 		checks(v)
 		version_check(v)
 	}
+	fmt.println(failures == 0 ? "ALL OK" : "FAILED")
 	os.exit(failures == 0 ? 0 : 1)
+}
+
+// Only the patches have this code. Keep it the last code in the file.
+when VERSION >= 2 {
+	added :: proc(n: int) -> int {
+		version_here := VERSION
+		doubled := n * 2
+		total := doubled + version_here // the debugger breaks here
+		return total
+	}
 }

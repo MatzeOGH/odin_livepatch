@@ -59,6 +59,12 @@ patch_to :: proc(v: int) -> lp.Error {
 	return lp.patch(BUILD_SCRIPT)
 }
 
+// Checks that the code that runs is version v. A patch that does not apply, or a call that the
+// optimizer removed, then fails instead of passing with the old code.
+version_check :: proc(v: int) {
+	check("the running code is version", VERSION, v)
+}
+
 // main stays in its v1 body through all patches, so it does no checks itself. At -o:speed,
 // LLVM can fold a result of v1 code into it. checks() is a new call after each patch.
 @(optimization_mode="none")
@@ -66,9 +72,11 @@ main :: proc() {
 	fmt.println("v1")
 	setup()
 	checks(1)
+	version_check(1)
 	for v in 2 ..= LAST_VERSION {
 		check("patch", patch_to(v), nil)
 		checks(v)
+		version_check(v)
 	}
 	os.exit(failures == 0 ? 0 : 1)
 }
