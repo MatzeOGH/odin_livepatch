@@ -85,9 +85,10 @@ needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
 	return true
 }
 
-// A COFF object with only absolute symbols. A symbol value holds only the low 32 bits of the address
+// A COFF object with the absolute symbols
 absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
-	symbol_count := len(merged.aliases) + len(merged.call_aliases) + len(merged.externals)
+	cell_count := len(merged.debug_cells)
+	symbol_count := len(merged.aliases) + len(merged.call_aliases) + len(merged.externals) + cell_count
 	string_table := make([dynamic]u8, context.temp_allocator)
 	append(&string_table, 0, 0, 0, 0) // the size, set below
 	symbols := make([dynamic]Coff_Symbol, 0, symbol_count, context.temp_allocator)
@@ -110,15 +111,41 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	for name, addr in merged.externals {
 		add_absolute_symbol(&symbols, &string_table, name, addr)
 	}
+	cells := make([]u64le, cell_count, context.temp_allocator)
+	cell_index := 0
+	for name, addr in merged.debug_cells {
+		symbol: Coff_Symbol
+		(^u32le)(&symbol.name[4])^ = u32le(len(string_table))
+		append(&string_table, name)
+		append(&string_table, 0)
+		symbol.value = u32le(cell_index * 8)
+		symbol.section_number = 1
+		symbol.storage_class = .EXTERNAL
+		append(&symbols, symbol)
+		cells[cell_index] = u64le(uintptr(addr))
+		cell_index += 1
+	}
 	(^u32le)(raw_data(string_table[:]))^ = u32le(len(string_table))
 
-	out := make([]byte, FILE_HDR_SIZE + symbol_count * pe.COFF_SYMBOL_SIZE + len(string_table), context.temp_allocator)
+	section_count := cell_count > 0 ? 1 : 0
+	cells_offset := FILE_HDR_SIZE + section_count * SECTION_HDR_SIZE
+	symtab_offset := cells_offset + cell_count * 8
+	out := make([]byte, symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE + len(string_table), context.temp_allocator)
 	file_header := (^pe.File_Header)(raw_data(out))
 	file_header.machine = .AMD64
-	file_header.pointer_to_symbol_table = FILE_HDR_SIZE
+	file_header.number_of_sections = u16le(section_count)
+	file_header.pointer_to_symbol_table = u32le(symtab_offset)
 	file_header.number_of_symbols = u32le(symbol_count)
-	copy(out[FILE_HDR_SIZE:], slice.to_bytes(symbols[:]))
-	copy(out[FILE_HDR_SIZE + symbol_count * pe.COFF_SYMBOL_SIZE:], string_table[:])
+	if section_count > 0 {
+		section := coff_section_header(out, FILE_HDR_SIZE, 0)
+		copy(section.name[:], ".rdata")
+		section.size_of_raw_data = u32le(cell_count * 8)
+		section.pointer_to_raw_data = u32le(cells_offset)
+		section.characteristics = .CNT_INITIALIZED_DATA | .MEM_READ | .ALIGN_8BYTES
+		copy(out[cells_offset:], slice.to_bytes(cells))
+	}
+	copy(out[symtab_offset:], slice.to_bytes(symbols[:]))
+	copy(out[symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE:], string_table[:])
 	return out
 }
 

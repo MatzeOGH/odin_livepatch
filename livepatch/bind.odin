@@ -26,6 +26,7 @@ Merged :: struct {
 	grew:           Global_Grew,    // the first data that is larger than the storage it binds to
 	keys:           Static_Keys,    // stable keys of the statics in the patch objects
 	type_table_new: rawptr,         // the new build's runtime.type_table slice header, in the patch module
+	debug_cells:    map[string]rawptr, // `lp$r<name>` -> live address of kept data, for the debug info (Windows)
 }
 
 merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
@@ -37,7 +38,8 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 	merged.redirects = make([dynamic]Redirect, allocator)
 	merged.slot_targets = make([dynamic]Redirect, allocator)
 	merged.new_globals = make(map[string]int, allocator)
-	seen := make(map[string]bool, allocator)
+	merged.debug_cells = make(map[string]rawptr, allocator)
+	seen :=make(map[string]bool, allocator)
 
 	names := make([dynamic]string, context.temp_allocator)
 	for &object in objects {
