@@ -8,11 +8,11 @@ import "core:time"
 LIVEPATCH :: #config(LIVEPATCH, false)
 
 // The targets that livepatch patches. On any other, the API is a no-op stub.
-SUPPORTED_TARGET :: (ODIN_OS == .Windows || ODIN_OS == .Linux) && ODIN_ARCH == .amd64
+SUPPORTED_TARGET :: ((ODIN_OS == .Windows || ODIN_OS == .Linux) && ODIN_ARCH == .amd64) || (ODIN_OS == .Darwin && ODIN_ARCH == .arm64)
 
 // The sections of the migration hooks, for `@(link_section=...)`
-HOOK_PRE_SECTION  :: "lp_pre"
-HOOK_POST_SECTION :: "lp_post"
+HOOK_PRE_SECTION  :: "__DATA,lp_pre" when ODIN_OS == .Darwin else "lp_pre"
+HOOK_POST_SECTION :: "__DATA,lp_post" when ODIN_OS == .Darwin else "lp_post"
 
 Error :: union {
 	Build_Failed,

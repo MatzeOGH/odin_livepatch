@@ -222,14 +222,15 @@ near_symbol_start :: proc(addr: uintptr) -> bool {
 	return index < len(exe_starts) && exe_starts[index] < addr + 5
 }
 
-// `unwritten` holds keys of sites
-write_sites :: proc(unwritten: []rawptr) {
+// `unwritten` holds keys of sites. The exe code is writable, so it cannot fail.
+write_sites :: proc(unwritten: []rawptr) -> bool {
 	for key in unwritten {
 		redirect_site := &sites[key]
 		write_site_bytes(redirect_site^)
 		flush_icache(redirect_site.site, REDIRECT_SIZE)
 		redirect_site.written = true
 	}
+	return true
 }
 
 alloc_near :: proc(size: int, commit := true) -> rawptr {

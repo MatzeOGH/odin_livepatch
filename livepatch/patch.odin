@@ -1,4 +1,4 @@
-#+build windows amd64, linux amd64
+#+build windows amd64, linux amd64, darwin arm64
 package livepatch
 
 import "base:runtime"
@@ -44,7 +44,10 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	for redirect in merged.redirects {
 		write_tramp_target(sites[redirect.from].tramp, redirect.body)
 	}
-	write_sites(unwritten[:])
+	if !write_sites(unwritten[:]) {
+		resume_all(handles)
+		return false
+	}
 	for slot_target in merged.slot_targets {
 		write_tramp_target(slot_target.from, slot_target.body)
 	}
