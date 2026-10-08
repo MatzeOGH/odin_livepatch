@@ -119,6 +119,22 @@ jobs:
           ld -v 2>&1 | head -n 1
           /opt/homebrew/opt/lld/bin/ld64.lld --version
 
+      - name: Unit tests (Mach-O parsing)
+        shell: bash # -o pipefail: the tee must not hide a failure
+        # Debug logs, plain output, one test at a time, so the log reads in order
+        run: >
+          odin test livepatch -o:${{ matrix.opt }}
+          -define:ODIN_TEST_LOG_LEVEL=debug -define:ODIN_TEST_FANCY=false -define:ODIN_TEST_THREADS=1
+          2>&1 | tee macho_test.log
+
+      - name: Upload the unit test log
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macho-test-log-${{ matrix.opt }}
+          path: macho_test.log
+          if-no-files-found: ignore
+
       - name: Tests
         shell: pwsh
         run: tests/ci/run.ps1 change_proc
