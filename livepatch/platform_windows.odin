@@ -47,70 +47,26 @@ pe_sections :: proc "contextless" (image: rawptr) -> []pe.Section_Header32 {
 	return ([^]pe.Section_Header32)(rawptr(first))[:nt_headers.FileHeader.NumberOfSections]
 }
 
+load_exe_sections :: proc() {
+	base := exe_base()
+	headers := pe_sections(rawptr(base))
+	sections := make([]Exe_Section, len(headers))
+	for &header, i in headers {
+		sections[i] = {
+			name        = coff_section_name(&header),
+			start       = base + uintptr(header.virtual_address),
+			size        = int(header.virtual_size),
+			code        = header.characteristics & .MEM_EXECUTE != {},
+			variable    = header.characteristics & .MEM_WRITE != {},
+			file_offset = int(header.pointer_to_raw_data),
+			file_size   = int(header.size_of_raw_data),
+		}
+	}
+	exe_sections = sections
+}
+
 exe_image_size :: proc "contextless" () -> uintptr {
 	return uintptr(pe_headers(rawptr(exe_base())).OptionalHeader.SizeOfImage)
-}
-
-// The section of `image` that holds `rva`
-pe_section_at :: proc(image: rawptr, rva: uintptr) -> (section: ^pe.Section_Header32, ok: bool) {
-	for &candidate in pe_sections(image) {
-		start := uintptr(candidate.virtual_address)
-		if rva >= start && rva < start + uintptr(candidate.virtual_size) {
-			return &candidate, true
-		}
-	}
-	return
-}
-
-// The end of the exe section that holds `addr`, or `addr` if no section holds it
-exe_section_end :: proc(addr: uintptr) -> int {
-	base := exe_base()
-	if section, found := pe_section_at(rawptr(base), addr - base); found {
-		return int(base + uintptr(section.virtual_address) + uintptr(section.virtual_size))
-	}
-	return int(addr)
-}
-
-exe_holds_variable :: proc(addr: uintptr) -> bool {
-	base := exe_base()
-	section := pe_section_at(rawptr(base), addr - base) or_return
-	return section.characteristics & .MEM_WRITE != {}
-}
-
-exe_holds_code :: proc(addr: uintptr) -> bool {
-	base := exe_base()
-	section := pe_section_at(rawptr(base), addr - base) or_return
-	return section.characteristics & .MEM_EXECUTE != {}
-}
-
-// The live address and size of the first exe section with this name
-exe_section_named :: proc(name: string) -> (addr: uintptr, size: int, ok: bool) {
-	base := exe_base()
-	for &section in pe_sections(rawptr(base)) {
-		if coff_section_name(&section) == name {
-			return base + uintptr(section.virtual_address), int(section.virtual_size), true
-		}
-	}
-	return
-}
-
-// A breakpoint is a 0xCC in memory where the file has another byte
-exe_file_byte :: proc(addr: uintptr) -> (file_byte: u8, ok: bool) {
-	if len(exe_file) == 0 {
-		return
-	}
-	rva := addr - exe_base()
-	section := pe_section_at(raw_data(exe_file), rva) or_return
-	offset := rva - uintptr(section.virtual_address)
-	// After size_of_raw_data, the section is zero fill. The file bytes there are of the next section.
-	if offset >= uintptr(section.size_of_raw_data) {
-		return
-	}
-	file_offset := int(section.pointer_to_raw_data) + int(offset)
-	if file_offset >= len(exe_file) {
-		return
-	}
-	return exe_file[file_offset], true
 }
 
 // Makes the exe code and the type_table header writable

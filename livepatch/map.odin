@@ -12,6 +12,7 @@ load_exe_symbols :: proc(exe_path: string) {
 	symbols, starts := read_msvc_map(map_path, exe_base(), context.allocator)
 	slice.sort(starts[:])
 	exe_map, exe_starts = symbols, starts[:]
+	load_exe_sections()
 }
 
 // `starts` is the live address of every symbol

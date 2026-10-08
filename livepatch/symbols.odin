@@ -10,12 +10,68 @@ exe_starts: []uintptr          // sorted live address of every exe symbol
 exe_file:   []byte             // the exe file on disk
 variable_sizes: map[uintptr]int
 
+Exe_Section :: struct {
+	name:        string,
+	start:       uintptr, // live address
+	size:        int,
+	code:        bool,
+	variable:    bool, // writable data that a patch binds to
+	file_offset: int,  // of its bytes in exe_file
+	file_size:   int,  // 0 for zero fill
+}
+
+exe_sections: []Exe_Section
+
+exe_section_at :: proc(addr: uintptr) -> (section: ^Exe_Section, ok: bool) {
+	for &candidate in exe_sections {
+		if addr >= candidate.start && addr < candidate.start + uintptr(candidate.size) {
+			return &candidate, true
+		}
+	}
+	return
+}
+
+exe_section_end :: proc(addr: uintptr) -> int {
+	if section, found := exe_section_at(addr); found {
+		return int(section.start) + section.size
+	}
+	return int(addr)
+}
+
+exe_holds_code :: proc(addr: uintptr) -> bool {
+	section := exe_section_at(addr) or_return
+	return section.code
+}
+
+exe_holds_variable :: proc(addr: uintptr) -> bool {
+	section := exe_section_at(addr) or_return
+	return section.variable
+}
+
+exe_section_named :: proc(name: string) -> (addr: uintptr, size: int, ok: bool) {
+	section_name := name[strings.index_byte(name, ',') + 1:]
+	for section in exe_sections {
+		if section.name == section_name {
+			return section.start, section.size, true
+		}
+	}
+	return
+}
+
+exe_file_byte :: proc(addr: uintptr) -> (file_byte: u8, ok: bool) {
+	section := exe_section_at(addr) or_return
+	offset := int(addr - section.start)
+	if offset >= section.file_size || section.file_offset + offset >= len(exe_file) {
+		return
+	}
+	return exe_file[section.file_offset + offset], true
+}
+
 exe_symbol_address :: proc(name: string, keys: Static_Keys = nil) -> (addr: rawptr, ok: bool) {
 	live, found := exe_map[data_key(keys, name)]
 	return rawptr(live), found
 }
 
-// Adds a symbol to an index of a module
 index_add :: proc(index: ^map[string]uintptr, ambiguous: ^map[string]bool, key: string, addr: uintptr, allocator: runtime.Allocator) {
 	if key in ambiguous {
 		return

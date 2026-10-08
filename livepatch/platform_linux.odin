@@ -69,6 +69,23 @@ load_exe_symbols :: proc(exe_path: string) {
 	exe_end = mem.align_forward_uintptr(exe_bias + link_end, PAGE_SIZE)
 	exe_view = view
 
+	sections := make([dynamic]Exe_Section, context.allocator)
+	for &section in view.sections {
+		if section.flags & SHF_ALLOC == 0 {
+			continue
+		}
+		append(&sections, Exe_Section{
+			name        = elf_section_name(&view, &section),
+			start       = exe_bias + uintptr(section.addr),
+			size        = int(section.size),
+			code        = section.flags & SHF_EXECINSTR != 0,
+			variable    = section_holds_variables(&view, &section),
+			file_offset = int(section.offset),
+			file_size   = 0 if section.type == SHT_NOBITS else int(section.size),
+		})
+	}
+	exe_sections = sections[:]
+
 	exe_symbols := read_elf_symbols(&view, exe_bias, context.allocator)
 	slice.sort(exe_symbols.starts[:])
 	exe_map = exe_symbols.symbols
@@ -81,58 +98,6 @@ load_exe_symbols :: proc(exe_path: string) {
 			variable_sizes[address] = max(variable_sizes[address], int(sym.size))
 		}
 	}
-}
-
-// The end of the exe section that holds `addr`, or `addr` if no section holds it
-exe_section_end :: proc(addr: uintptr) -> int {
-	if section, found := exe_section_at(addr); found {
-		return int(exe_bias + uintptr(section.addr) + uintptr(section.size))
-	}
-	return int(addr)
-}
-
-exe_holds_variable :: proc(addr: uintptr) -> bool {
-	section := exe_section_at(addr) or_return
-	return section_holds_variables(&exe_view, section)
-}
-
-exe_holds_code :: proc(addr: uintptr) -> bool {
-	section := exe_section_at(addr) or_return
-	return section.flags & SHF_EXECINSTR != 0
-}
-
-exe_section_at :: proc(addr: uintptr) -> (section: ^Elf64_Shdr, ok: bool) {
-	for &candidate in exe_view.sections {
-		start := exe_bias + uintptr(candidate.addr)
-		if candidate.flags & SHF_ALLOC != 0 && addr >= start && addr < start + uintptr(candidate.size) {
-			return &candidate, true
-		}
-	}
-	return
-}
-
-// The live address and size of the first exe section with this name
-exe_section_named :: proc(name: string) -> (addr: uintptr, size: int, ok: bool) {
-	for &section in exe_view.sections {
-		if section.flags & SHF_ALLOC != 0 && elf_section_name(&exe_view, &section) == name {
-			return exe_bias + uintptr(section.addr), int(section.size), true
-		}
-	}
-	return
-}
-
-exe_file_byte :: proc(addr: uintptr) -> (file_byte: u8, ok: bool) {
-	link_addr := addr - exe_bias
-	for &segment in exe_view.segments {
-		if segment.type == PT_LOAD && link_addr >= uintptr(segment.vaddr) && link_addr < uintptr(segment.vaddr + segment.filesz) {
-			file_offset := int(segment.offset) + int(link_addr - uintptr(segment.vaddr))
-			if file_offset < len(exe_file) {
-				return exe_file[file_offset], true
-			}
-			return
-		}
-	}
-	return
 }
 
 exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, ok: bool) {
