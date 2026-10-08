@@ -21,8 +21,8 @@ LINE=$(grep -n 'the debugger breaks here' main.odin | cut -d: -f1)
 set -- --batch --nx -ex 'set pagination off' -ex 'set breakpoint pending on' \
 	-ex 'handle SIG62 nostop noprint pass' -ex "break main.odin:$LINE" -ex run
 for stop in 1 2 3; do
-	set -- "$@" -ex 'echo STOP\n' -ex up -ex 'info locals' -ex 'print total' -ex 'print tl_value' \
-		-ex 'print added_global' -ex continue
+	set -- "$@" -ex 'echo STOP\n' -ex up -ex 'info locals' -ex "print 'main::total'" -ex "print 'main::tl_value'" \
+		-ex "print 'main::added_global'" -ex continue
 done
 "$GDB" "$@" ./app > gdb.log 2>&1
 cat gdb.log

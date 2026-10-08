@@ -30,7 +30,7 @@ continue
 thread backtrace --count 6
 frame select 1
 frame variable p total
-target variable counter
+target variable -r ^main::counter$
 continue
 register read rdi
 frame select 1
@@ -38,7 +38,7 @@ frame variable sum
 continue
 frame select 1
 frame variable values total
-target variable counter
+target variable -r ^main::counter$
 continue
 thread backtrace --count 3
 frame select 1
@@ -63,7 +63,7 @@ echo 'v2: a struct, a global, the call stack'
 expect             'stopped in stop_v2'                 'frame #0: .*main::stop_v2'
 expect_unoptimized 'struct local p'                     ' p = \(x = 3, y = 6\)$'
 expect_unoptimized 'local total'                        ' total = 9$'
-expect             'global counter, before the update'  ' counter = 5$'
+expect             'global counter, before the update'  ' main::counter = 5$'
 expect_unoptimized 'scene_v2 in the stack'              'frame #1: .*main::scene_v2'
 expect_unoptimized 'drive in the stack'                 'frame #[0-9]+: .*main::drive'
 expect             'main of the exe in the stack'       'frame #[0-9]+: .*main::main'
@@ -72,7 +72,7 @@ expect             'loop variable i, as the argument'   'rdi = 0x0+5$'
 expect_unoptimized 'sum so far'                         ' sum = 15$'
 expect_unoptimized 'array values'                       ' values = \(\[0\] = 66, \[1\] = 1, \[2\] = 14\)$'
 expect_unoptimized 'local total'                        ' total = 67$'
-expect             'global counter, as v2 left it'      ' counter = 14$'
+expect             'global counter, as v2 left it'      ' main::counter = 14$'
 echo 'v4: a procedure that only this patch has, with a string argument'
 expect             'stopped in stop_v4'                 'frame #0: .*main::stop_v4'
 expect_unoptimized 'added_helper in the stack'          'frame #1: .*main::added_helper'

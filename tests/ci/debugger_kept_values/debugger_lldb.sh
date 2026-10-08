@@ -19,12 +19,13 @@ LINE=$(grep -n 'the debugger breaks here' main.odin | cut -d: -f1)
 # variable has its own command, so that the error does not hide the others. lldb learns of each
 # patch through the GDB JIT interface, which is off by default. patch() stops the other threads
 # with signal 62, which lldb must give to the program. At each stop: select bump (frame 1), read
-# the @static calls and the globals, continue.
+# the @static calls and the globals, continue. Odin names a global by its package (main::total), and
+# lldb finds such a name only with a regex.
 STOP='frame select 1
 frame variable calls
-target variable total
-target variable tl_value
-target variable added_global
+target variable -r ^main::total$
+target variable -r ^main::tl_value$
+target variable -r ^main::added_global$
 continue'
 cat > lldb_commands.txt << EOF
 settings set plugin.jit-loader.gdb.enable on
@@ -47,15 +48,13 @@ expect() {
 }
 expect 'stopped three times in bump'             'frame #1: .*main::bump' 3
 expect 'v3: @static calls is 3'                  ' calls = 3$'
-expect 'v1: global total'                        ' total = 101$'
-expect 'v3: global total'                        ' total = 106$'
-expect 'v1: @thread_local tl_value'              ' tl_value = 8$'
-expect 'v3: @thread_local tl_value'              ' tl_value = 13$'
-expect 'v2: global that v2 adds'                 ' added_global = 1002$'
-expect 'v3: the same global, kept'               ' added_global = 1005$'
-# target variable lists the variable of the exe and of each patch module. The debug info of a patch
-# gives a thread-local in the TLS block of the exe (see rewrite_debug_thread_local), so no entry may
-# lack TLS data.
+expect 'v1: global total'                        ' main::total = 101$'
+expect 'v3: global total'                        ' main::total = 106$'
+expect 'v1: @thread_local tl_value'              ' main::tl_value = 8$'
+expect 'v3: @thread_local tl_value'              ' main::tl_value = 13$'
+expect 'v2: global that v2 adds'                 ' main::added_global = 1002$'
+expect 'v3: the same global, kept'               ' main::added_global = 1005$'
+# A thread-local of a patch module has no name (see hide_debug_thread_local), so lldb lists only the exe's.
 if grep -q 'No TLS data' lldb.log; then echo '  FAIL  each @thread_local entry has a value (found "No TLS data")'; failed=1; else echo '  OK    each @thread_local entry has a value'; fi
 expect 'the program finished'                    'ALL OK'
 expect 'it exited normally'                      'exited with status = 0'

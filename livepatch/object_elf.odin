@@ -378,14 +378,21 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, relas: []Elf64_Rela, site: int) -> bool {
 	DW_AT_NAME :: 0x03
 	DW_AT_LOCATION :: 0x02
+	DW_AT_STR_OFFSETS_BASE :: 0x72
 	DW_FORM_STRP :: 0x0E
+	DW_FORM_STRX :: 0x1A
+	DW_FORM_STRX1 :: 0x25
+	DW_FORM_STRX4 :: 0x28
 	DW_FORM_IMPLICIT_CONST :: 0x21
 
 	abbrev, debug_str: []byte
-	for &section in view.sections {
+	str_offset_relas: []Elf64_Rela
+	debug_str_index := -1
+	for &section, section_index in view.sections {
 		switch elf_section_name(view, &section) {
-		case ".debug_abbrev": abbrev = elf_section_bytes(data, &section) or_return
-		case ".debug_str":    debug_str = elf_section_bytes(data, &section) or_return
+		case ".debug_abbrev":           abbrev = elf_section_bytes(data, &section) or_return
+		case ".debug_str":              debug_str, debug_str_index = elf_section_bytes(data, &section) or_return, section_index
+		case ".rela.debug_str_offsets": str_offset_relas = elf_section_relas(data, &section) or_return
 		}
 	}
 
@@ -400,15 +407,32 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 		pos^ += size
 		return int(decoded), true
 	}
+	// The relocated value of a 4-byte field at `offset`: in an object, the relocation holds it
+	relocated :: proc(bytes: []byte, relas: []Elf64_Rela, offset: int) -> (rela: ^Elf64_Rela, value: int) {
+		for &r in relas {
+			if int(r.offset) == offset {
+				return &r, int(r.addend)
+			}
+		}
+		if offset < 0 || offset + 4 > len(bytes) {
+			return nil, 0
+		}
+		return nil, int((^u32le)(raw_data(bytes[offset:]))^)
+	}
 
-	// The compile unit that holds the site
-	unit := 0
+	// The compile unit that holds the site. DWARF 4 and 5 headers differ in the abbrev offset and length.
+	unit, unit_end, abbrev_at, header_size := 0, 0, 0, 0
 	for {
-		if unit + 11 > len(info) {
+		if unit + 12 > len(info) {
 			return false
 		}
-		unit_end := unit + 4 + int((^u32le)(raw_data(info[unit:]))^)
-		if unit_end > len(info) || (^u16le)(raw_data(info[unit + 4:]))^ != 4 {
+		unit_end = unit + 4 + int((^u32le)(raw_data(info[unit:]))^)
+		switch (^u16le)(raw_data(info[unit + 4:]))^ {
+		case 4: abbrev_at, header_size = unit + 6, 11
+		case 5: abbrev_at, header_size = unit + 8, 12
+		case:   return false
+		}
+		if unit_end > len(info) {
 			return false
 		}
 		if site < unit_end {
@@ -416,13 +440,7 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 		}
 		unit = unit_end
 	}
-	unit_end := unit + 4 + int((^u32le)(raw_data(info[unit:]))^)
-	abbrev_offset := int((^u32le)(raw_data(info[unit + 6:]))^)
-	for rela in relas {
-		if int(rela.offset) == unit + 6 {
-			abbrev_offset = int(rela.addend)
-		}
-	}
+	_, abbrev_offset := relocated(info, relas, abbrev_at)
 
 	// The abbreviation codes of the unit: code -> offset of its attribute specifications
 	specs := make(map[int]int, context.temp_allocator)
@@ -448,13 +466,14 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 	}
 
 	// Each entry of the unit: find the one whose location holds the site
-	for pos := unit + 11; pos < unit_end; {
+	str_offsets_base := 0
+	for pos := unit + header_size; pos < unit_end; {
 		code := uleb(info, &pos) or_return
 		if code == 0 {
 			continue
 		}
 		spec := specs[code] or_return
-		name_at := -1
+		name_at, name_form := -1, 0
 		for {
 			attribute := uleb(abbrev, &spec) or_return
 			form := uleb(abbrev, &spec) or_return
@@ -465,34 +484,59 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 				_, size, _ := varint.decode_ileb128_buffer(abbrev[spec:])
 				spec += size
 			}
-			if attribute == DW_AT_NAME && form == DW_FORM_STRP {
-				name_at = pos
-			}
 			start := pos
 			pos = dwarf_skip_form(info, pos, form) or_return
-			if attribute != DW_AT_LOCATION || site < start || site >= pos {
-				continue
-			}
-			// The entry of the thread-local: its name gets the NUL at the end of its string
-			for &rela in relas {
-				if int(rela.offset) != name_at || name_at < 0 {
-					continue
+			switch {
+			case attribute == DW_AT_STR_OFFSETS_BASE:
+				_, str_offsets_base = relocated(info, relas, start)
+			case attribute == DW_AT_NAME:
+				name_at, name_form = start, form
+			case attribute == DW_AT_LOCATION && site >= start && site < pos:
+				// The entry of the thread-local: the relocation that gives its name gets the NUL at the end
+				name_rela: ^Elf64_Rela
+				switch name_form {
+				case DW_FORM_STRP:
+					name_rela, _ = relocated(info, relas, name_at)
+				case DW_FORM_STRX, DW_FORM_STRX1 ..= DW_FORM_STRX4:
+					index := 0
+					if name_form == DW_FORM_STRX {
+						uleb_at := name_at
+						index = uleb(info, &uleb_at) or_return
+					} else {
+						for byte_index in 0 ..< name_form - DW_FORM_STRX1 + 1 {
+							index |= int(info[name_at + byte_index]) << uint(8 * byte_index)
+						}
+					}
+					name_rela, _ = relocated(nil, str_offset_relas, str_offsets_base + 4 * index)
 				}
-				sym := &view.syms[elf_rela_symbol_index(rela.info)]
-				if elf_symbol_type(sym.info) != STT_SECTION || rela.addend < 0 || int(rela.addend) >= len(debug_str) {
+				if name_rela == nil || name_rela.addend < 0 || int(name_rela.addend) >= len(debug_str) {
 					return false
 				}
-				name := strings.truncate_to_byte(string(debug_str[rela.addend:]), 0)
-				rela.addend += i64(len(name))
+				if elf_symbol_type(view.syms[elf_rela_symbol_index(name_rela.info)].info) != STT_SECTION {
+					return false
+				}
+				// Each reference to the name, also from the .debug_names index, gets the NUL at its end
+				name_offset := name_rela.addend
+				name_length := i64(len(strings.truncate_to_byte(string(debug_str[name_offset:]), 0)))
+				for &section in view.sections {
+					if section.type != SHT_RELA || !strings.has_prefix(elf_section_name(view, &section), ".rela.debug") {
+						continue
+					}
+					for &rela in elf_section_relas(data, &section) or_continue {
+						sym := &view.syms[elf_rela_symbol_index(rela.info)]
+						if rela.addend == name_offset && elf_symbol_type(sym.info) == STT_SECTION && sym.shndx == u16(debug_str_index) {
+							rela.addend += name_length
+						}
+					}
+				}
 				return true
 			}
-			return false
 		}
 	}
 	return false
 }
 
-// The offset after an attribute value of the form `form` at `pos` (DWARF 4, 32-bit DWARF)
+// The offset after an attribute value of the form `form` at `pos` (DWARF 4 and 5, 32-bit DWARF)
 dwarf_skip_form :: proc(info: []byte, pos: int, form: int) -> (next: int, ok: bool) {
 	block :: proc(info: []byte, pos: int) -> (int, bool) {
 		length, size, err := varint.decode_uleb128_buffer(info[pos:])
@@ -501,11 +545,13 @@ dwarf_skip_form :: proc(info: []byte, pos: int, form: int) -> (next: int, ok: bo
 	size := 0
 	switch form {
 	case 0x19, 0x21: // flag_present, implicit_const
-	case 0x0B, 0x0C, 0x11: size = 1 // data1, flag, ref1
-	case 0x05, 0x12: size = 2 // data2, ref2
-	case 0x06, 0x0E, 0x10, 0x13, 0x17: size = 4 // data4, strp, ref_addr, ref4, sec_offset
-	case 0x01, 0x07, 0x14, 0x20: size = 8 // addr, data8, ref8, ref_sig8
-	case 0x0D, 0x0F, 0x15: // sdata, udata, ref_udata
+	case 0x0B, 0x0C, 0x11, 0x25, 0x29: size = 1 // data1, flag, ref1, strx1, addrx1
+	case 0x05, 0x12, 0x26, 0x2A: size = 2 // data2, ref2, strx2, addrx2
+	case 0x27, 0x2B: size = 3 // strx3, addrx3
+	case 0x06, 0x0E, 0x10, 0x13, 0x17, 0x1C, 0x1D, 0x1F, 0x28, 0x2C: size = 4 // data4, strp, ref_addr, ref4, sec_offset, ref_sup4, strp_sup, line_strp, strx4, addrx4
+	case 0x01, 0x07, 0x14, 0x20, 0x24: size = 8 // addr, data8, ref8, ref_sig8, ref_sup8
+	case 0x1E: size = 16 // data16
+	case 0x0D, 0x0F, 0x15, 0x1A, 0x1B, 0x22, 0x23: // sdata, udata, ref_udata, strx, addrx, loclistx, rnglistx
 		_, leb_size, err := varint.decode_uleb128_buffer(info[pos:])
 		if err != nil {
 			return
