@@ -52,7 +52,7 @@ tests\ci\change_proc\app.exe
 
 ## Debugger tests
 
-`tests\ci\run_debugger.ps1` runs each test that has a `debugger.ps1` under cdb, at the `-o:` level in `OPT` (default: `none`). `run.ps1` runs these tests too, but without a debugger. `debugger.ps1` sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch module of that version, and cdb must read the values there. The script then compares the cdb output with the expected values, as the gdb and lldb scripts of the Linux suites do.
+`tests\ci\run_debugger.ps1` runs each test that has a `debugger.ps1` under cdb, at the `-o:` level in `OPT` (default: `none`). `run.ps1` runs these tests too, but without a debugger. At each level, the stops, the modules, the call stack and the globals must be correct. Locals and arguments are checked at `-o:none` only: optimized code keeps them in registers or removes them, so cdb shows `<value unavailable>` or a stale value. `debugger.ps1` sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch module of that version, and cdb must read the values there. The script then compares the cdb output with the expected values, as the gdb and lldb scripts of the Linux suites do.
 
 | Test | What cdb must read |
 | --- | --- |
