@@ -21,7 +21,7 @@ settings set plugin.jit-loader.gdb.enable on
 breakpoint set -r ^main::stop_v2$ -G true -C "thread backtrace --count 6" -C "frame select 1" -C "frame variable"
 breakpoint set -r ^main::stop_v3$ -G true -C "thread backtrace --count 6" -C "frame select 1" -C "frame variable"
 process launch --stop-at-entry
-process handle SIG62 --stop false --notify false --pass true
+process handle 62 --stop false --notify false --pass true
 continue
 EOF
 "$LLDB" --batch -s lldb_commands.txt -- ./app > lldb.log 2>&1

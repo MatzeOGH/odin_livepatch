@@ -312,10 +312,11 @@ signal, the threads do not pause, and `patch()` fails with `Commit_Failed` after
 | Debugger | Signal | Breakpoints in a patch |
 | --- | --- | --- |
 | gdb | `handle SIG62 nostop noprint pass` | `set breakpoint pending on` |
-| lldb | `process handle SIG62 --stop false --notify false --pass true` | `settings set plugin.jit-loader.gdb.enable on` |
+| lldb | `process handle 62 --stop false --notify false --pass true` | `settings set plugin.jit-loader.gdb.enable on` |
 
-If you set `-define:LIVEPATCH_SIGNAL=<n>`, use `SIG<n>` in these commands. Windows does not
-use a signal, so no setup is necessary there.
+lldb names the real-time signals `SIGRTMIN+<x>` and `SIGRTMAX-<x>`, and does not accept `SIG62`.
+Thus give lldb the number. If you set `-define:LIVEPATCH_SIGNAL=<n>`, use `SIG<n>` for gdb and
+`<n>` for lldb. Windows does not use a signal, so no setup is necessary there.
 
 **VS Code**, with the CodeLLDB extension, in `.vscode/launch.json`:
 
@@ -327,7 +328,7 @@ use a signal, so no setup is necessary there.
   "program": "${workspaceFolder}/examples/demo",
   "cwd": "${workspaceFolder}/examples",
   "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
-  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+  "preRunCommands": ["process handle 62 --stop false --notify false --pass true"]
 }
 ```
 
@@ -358,6 +359,6 @@ use a signal, so no setup is necessary there.
   "program": "$ZED_WORKTREE_ROOT/examples/demo",
   "cwd": "$ZED_WORKTREE_ROOT/examples",
   "initCommands": ["settings set plugin.jit-loader.gdb.enable on"],
-  "preRunCommands": ["process handle SIG62 --stop false --notify false --pass true"]
+  "preRunCommands": ["process handle 62 --stop false --notify false --pass true"]
 }
 ```

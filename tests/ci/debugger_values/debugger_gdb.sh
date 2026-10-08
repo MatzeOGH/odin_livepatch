@@ -26,7 +26,7 @@ echo STOP v2\n
 backtrace 6
 up
 info locals
-print 'main::counter'
+print (long)'main::counter'
 continue
 end
 break main::loop_v3 if $rdi == 5
@@ -44,7 +44,7 @@ silent
 echo STOP v3 end\n
 up
 info locals
-print 'main::counter'
+print (long)'main::counter'
 continue
 end
 break main::stop_v4

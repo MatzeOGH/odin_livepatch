@@ -23,7 +23,7 @@ breakpoint set -r ^main::loop_v3$ -c "$rdi == 5" -G true -C "register read rdi" 
 breakpoint set -r ^main::stop_v3$ -G true -C "frame select 1" -C "frame variable" -C "target variable counter"
 breakpoint set -r ^main::stop_v4$ -G true -C "thread backtrace --count 3" -C "frame select 1" -C "frame variable"
 process launch --stop-at-entry
-process handle SIG62 --stop false --notify false --pass true
+process handle 62 --stop false --notify false --pass true
 continue
 EOF
 "$LLDB" --batch -s lldb_commands.txt -- ./app > lldb.log 2>&1
