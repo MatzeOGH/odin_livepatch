@@ -72,14 +72,11 @@ test_macho_exe :: proc(t: ^testing.T) {
 	log.infof("slide: 0x%x (live &test_probe 0x%x - n_value 0x%x)", slide, uintptr(&test_probe), probe_value)
 
 	symbols := read_macho_symbols(&view, slide, context.temp_allocator)
-	log.infof("read_macho_symbols: %d keys, %d starts, %d TLV descriptors", len(symbols.symbols), len(symbols.starts), len(symbols.tls))
+	log.infof("read_macho_symbols: %d keys, %d starts", len(symbols.symbols), len(symbols.starts))
 	for key, addr in symbols.symbols {
 		if strings.has_prefix(key, "livepatch::") {
 			log.debugf("  symbol %-50s 0x%x", key, addr)
 		}
-	}
-	for key, addr in symbols.tls {
-		log.debugf("  TLV descriptor %-42s 0x%x", key, addr)
 	}
 
 	expect_address(t, symbols.symbols, "livepatch::test_probe", uintptr(&test_probe))
@@ -96,7 +93,6 @@ test_macho_exe :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect_value(t, instances, 2)
-	testing.expect(t, "livepatch::test_thread_local" in symbols.tls, "the thread-local has a TLV descriptor")
 	testing.expect(t, len(symbols.starts) >= len(symbols.symbols), "each symbol has a start")
 	testing.expect_value(t, slide & (0x4000 - 1), 0)
 
@@ -104,12 +100,23 @@ test_macho_exe :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(symbols.starts), int(dysymtab.nlocalsym + dysymtab.nextdefsym))
 	}
 
-	// A TLV descriptor is 24 bytes
+	// Each 24-byte TLV descriptor in __thread_vars has a key
 	for section in view.sections {
-		if section.flags & SECTION_TYPE == S_THREAD_LOCAL_VARIABLES {
-			log.infof("__thread_vars: 0x%x bytes = %d descriptors", section.size, section.size / 24)
-			testing.expect_value(t, len(symbols.tls), int(section.size / 24))
+		if section.flags & SECTION_TYPE != S_THREAD_LOCAL_VARIABLES {
+			continue
 		}
+		start := slide + uintptr(section.addr)
+		descriptors := 0
+		for key, addr in symbols.symbols {
+			if addr >= start && addr < start + uintptr(section.size) {
+				log.debugf("  TLV descriptor %-42s 0x%x", key, addr)
+				descriptors += 1
+			}
+		}
+		log.infof("__thread_vars: 0x%x bytes = %d descriptors, %d found", section.size, section.size / 24, descriptors)
+		testing.expect_value(t, descriptors, int(section.size / 24))
+		descriptor, found := symbols.symbols["livepatch::test_thread_local"]
+		testing.expect(t, found && descriptor >= start && descriptor < start + uintptr(section.size), "the thread-local has a TLV descriptor")
 	}
 
 	// Only compiler helpers have internal linkage under -use-separate-modules, so only they repeat
@@ -177,7 +184,6 @@ test_macho_rejects :: proc(t: ^testing.T) {
 	testing.expect(t, empty_ok, "accepts a header with no load commands")
 }
 
-@(private = "file")
 log_view :: proc(view: ^Macho_View) {
 	header := view.header
 	log.infof("header: magic=0x%x cputype=0x%x filetype=%d ncmds=%d sizeofcmds=%d flags=0x%x",
@@ -214,7 +220,6 @@ log_view :: proc(view: ^Macho_View) {
 	}
 }
 
-@(private = "file")
 count_commands :: proc(data: []byte, view: ^Macho_View, cmd: u32) -> (count: u32) {
 	offset := size_of(Mach_Header_64)
 	for _ in 0 ..< view.header.ncmds {
@@ -227,7 +232,6 @@ count_commands :: proc(data: []byte, view: ^Macho_View, cmd: u32) -> (count: u32
 	return
 }
 
-@(private = "file")
 expect_address :: proc(t: ^testing.T, symbols: map[string]uintptr, key: string, want: uintptr, loc := #caller_location) {
 	got, found := symbols[key]
 	log.infof("%-30s found=%v got=0x%x want=0x%x", key, found, got, want)

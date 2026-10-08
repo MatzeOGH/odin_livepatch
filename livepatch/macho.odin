@@ -1,6 +1,7 @@
 #+build darwin arm64
 package livepatch
 
+import "core:slice"
 import "core:strings"
 
 Mach_Header_64 :: struct #packed {
@@ -127,6 +128,7 @@ LC_SYMTAB                     :: 0x2
 LC_DYSYMTAB                   :: 0xB
 LC_BUILD_VERSION              :: 0x32
 LC_LINKER_OPTIMIZATION_HINT   :: 0x2E
+LC_DYLD_CHAINED_FIXUPS        :: 0x8000_0034
 
 PLATFORM_MACOS :: 1
 
@@ -181,6 +183,7 @@ Macho_View :: struct {
 	loh:        ^Linkedit_Data_Command,
 	syms:       []Nlist_64,
 	strtab:     []u8,
+	chained_fixups: bool, // pointers that only dyld can decode
 }
 
 macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (v: Macho_View, ok: bool) {
@@ -229,6 +232,8 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (v: Ma
 			v.build = (^Build_Version_Command)(lc)
 		case LC_LINKER_OPTIMIZATION_HINT:
 			v.loh = (^Linkedit_Data_Command)(lc)
+		case LC_DYLD_CHAINED_FIXUPS:
+			v.chained_fixups = true
 		}
 		off += int(lc.cmdsize)
 	}
@@ -236,95 +241,77 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (v: Ma
 		if int(st.symoff) + int(st.nsyms) * size_of(Nlist_64) > len(data) || int(st.stroff) + int(st.strsize) > len(data) {
 			return
 		}
-		v.syms = ([^]Nlist_64)(raw_data(data[st.symoff:]))[:st.nsyms]
+		v.syms = slice.reinterpret([]Nlist_64, data[st.symoff:][:int(st.nsyms) * size_of(Nlist_64)])
 		v.strtab = data[st.stroff:][:st.strsize]
 	}
 	return v, true
 }
 
-fixed_name :: proc "contextless" (b: ^[16]u8) -> string {
+fixed_name :: proc(b: ^[16]u8) -> string {
 	return strings.truncate_to_byte(string(b[:]), 0)
 }
 
-macho_section_name :: proc "contextless" (sh: ^Section_64) -> string { return fixed_name(&sh.sectname) }
-macho_segment_name :: proc "contextless" (sh: ^Section_64) -> string { return fixed_name(&sh.segname) }
+macho_section_name :: proc(sh: ^Section_64) -> string { return fixed_name(&sh.sectname) }
+macho_segment_name :: proc(sh: ^Section_64) -> string { return fixed_name(&sh.segname) }
 
-macho_raw_name :: proc "contextless" (v: ^Macho_View, sym: ^Nlist_64) -> string {
+macho_raw_name :: proc(v: ^Macho_View, sym: ^Nlist_64) -> string {
 	if int(sym.n_strx) >= len(v.strtab) {
 		return ""
 	}
 	return strings.truncate_to_byte(string(v.strtab[sym.n_strx:]), 0)
 }
 
-macho_symbol_name :: proc "contextless" (v: ^Macho_View, sym: ^Nlist_64) -> string {
-	name := macho_raw_name(v, sym)
-	if len(name) > 1 && name[0] == '_' {
-		return name[1:]
-	}
-	return name
+macho_symbol_name :: proc(v: ^Macho_View, sym: ^Nlist_64) -> string {
+	return strings.trim_prefix(macho_raw_name(v, sym), "_")
 }
 
-macho_is_temporary :: proc "contextless" (raw: string) -> bool {
-	return len(raw) == 0 || raw[0] != '_'
+macho_is_temporary :: proc(raw: string) -> bool {
+	return !strings.has_prefix(raw, "_")
 }
 
-macho_symbol_section :: proc "contextless" (v: ^Macho_View, sym: ^Nlist_64) -> ^Section_64 {
-	if sym.n_type & N_STAB != 0 || sym.n_type & N_TYPE != N_SECT {
-		return nil
-	}
-	if sym.n_sect == NO_SECT || int(sym.n_sect) > len(v.sections) {
+macho_symbol_section :: proc(v: ^Macho_View, sym: ^Nlist_64) -> ^Section_64 {
+	if sym.n_type & (N_STAB | N_TYPE) != N_SECT || sym.n_sect == NO_SECT || int(sym.n_sect) > len(v.sections) {
 		return nil
 	}
 	return v.sections[sym.n_sect - 1]
 }
 
-macho_section_bytes :: proc "contextless" (data: []byte, sh: ^Section_64) -> (bytes: []byte, ok: bool) {
+macho_section_bytes :: proc(data: []byte, sh: ^Section_64) -> (bytes: []byte, ok: bool) {
 	switch sh.flags & SECTION_TYPE {
 	case S_ZEROFILL, S_GB_ZEROFILL, S_THREAD_LOCAL_ZEROFILL:
 		return {}, true
 	}
-	start, size := int(sh.offset), int(sh.size)
-	if start < 0 || size < 0 || start + size > len(data) {
+	if int(sh.offset) + int(sh.size) > len(data) {
 		return
 	}
-	return data[start:][:size], true
+	return data[sh.offset:][:sh.size], true
 }
 
-macho_section_relocs :: proc "contextless" (data: []byte, sh: ^Section_64) -> (relocs: []Relocation_Info, ok: bool) {
-	start := int(sh.reloff)
-	n := int(sh.nreloc)
-	if n == 0 {
-		return {}, true
-	}
-	if start <= 0 || start + n * size_of(Relocation_Info) > len(data) {
+macho_section_relocs :: proc(data: []byte, sh: ^Section_64) -> (relocs: []Relocation_Info, ok: bool) {
+	size := int(sh.nreloc) * size_of(Relocation_Info)
+	if int(sh.reloff) + size > len(data) {
 		return
 	}
-	return ([^]Relocation_Info)(raw_data(data[start:]))[:n], true
+	return slice.reinterpret([]Relocation_Info, data[sh.reloff:][:size]), true
 }
 
-macho_is_thread_local :: proc "contextless" (sh: ^Section_64) -> bool {
-	switch sh.flags & SECTION_TYPE {
-	case S_THREAD_LOCAL_REGULAR, S_THREAD_LOCAL_ZEROFILL, S_THREAD_LOCAL_VARIABLES,
-	     S_THREAD_LOCAL_VARIABLE_POINTERS, S_THREAD_LOCAL_INIT_FUNCTION_POINTERS:
-		return true
-	}
-	return false
+macho_is_thread_local :: proc(sh: ^Section_64) -> bool {
+	type := sh.flags & SECTION_TYPE
+	return type >= S_THREAD_LOCAL_REGULAR && type <= S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
 }
 
-macho_is_code :: proc "contextless" (sh: ^Section_64) -> bool {
+macho_is_code :: proc(sh: ^Section_64) -> bool {
 	return sh.flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS) != 0
 }
 
 Macho_Symbols :: struct {
 	symbols: map[string]uintptr, // stable key (data_key) -> live address
 	starts:  [dynamic]uintptr,   // live address of every symbol
-	tls:     map[string]uintptr, // stable key (data_key) -> live address of its TLV descriptor
 }
 
 read_macho_symbols :: proc(v: ^Macho_View, slide: uintptr, allocator := context.allocator, stable_keys := true) -> (out: Macho_Symbols) {
 	out.symbols = make(map[string]uintptr, allocator)
 	out.starts = make([dynamic]uintptr, allocator)
-	out.tls = make(map[string]uintptr, allocator)
 
 	keys: Static_Keys
 	if stable_keys {
@@ -351,9 +338,6 @@ read_macho_symbols :: proc(v: ^Macho_View, slide: uintptr, allocator := context.
 			continue
 		}
 		key := data_key(keys, raw[1:])
-		if sh.flags & SECTION_TYPE == S_THREAD_LOCAL_VARIABLES {
-			index_add(&out.tls, &ambiguous, key, live, allocator)
-		}
 		index_add(&out.symbols, &ambiguous, key, live, allocator)
 	}
 	return
