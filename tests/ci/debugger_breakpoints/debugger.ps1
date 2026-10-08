@@ -10,11 +10,19 @@ if (-not (Test-Path $cdb)) {
 }
 
 # Each breakpoint prints the stack and the locals of its caller (frame 1), then continues
+# cdb resolves a breakpoint on a symbol only with its module name, and the name of a patch
+# module (lp_<pid>_g<n>) is not known before the patch. Thus, each time a module lp_* loads,
+# cdb runs cdb_on_load.txt, which sets the breakpoints with bm in all modules lp_*.
+$on_load = @(
+    'bm lp_*!main::stop_v2 ".echo STOP v2; k 5; .frame 1; dv; g"'
+    'bm lp_*!main::stop_v3 ".echo STOP v3; k 5; .frame 1; dv; g"'
+    'g'
+)
+$on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'
+Set-Content $on_load_file $on_load
 $commands = @(
     '.lines -e'
-    'bu main::stop_v2 ".echo STOP v2; k 5; .frame 1; dv; g"'
-    'bu main::stop_v3 ".echo STOP v3; k 5; .frame 1; dv; g"'
-    'bl'
+    "sxe -c `"`$`$<$on_load_file`" ld:lp_*"
     'g'
 )
 $commands_file = Join-Path $PSScriptRoot 'cdb_commands.txt'
@@ -33,12 +41,12 @@ function expect($label, $pattern, $count = 1) {
     $found = ([regex]::Matches($text, "(?m)$pattern")).Count
     if ($found -ge $count) { Write-Host "  OK    $label" } else { Write-Host "  FAIL  $label (found $found of $count)"; $script:failed = $true }
 }
-expect 'v2: stopped in the patch'           'STOP v2'
+expect 'v2: stopped in the patch'           '^STOP v2\s*$'
 expect 'v2: in the patch module'            'lp_\w+!main::stop_v2'
 expect 'v2: caller body_v2 in the patch'    'lp_\w+!main::body_v2'
 expect 'v2: local n'                        '\bn = 0n20'
 expect 'v2: local doubled'                  '\bdoubled = 0n40'
-expect 'v3: stopped in the second patch'    'STOP v3'
+expect 'v3: stopped in the second patch'    '^STOP v3\s*$'
 expect 'v3: in the patch module'            'lp_\w+!main::stop_v3'
 expect 'v3: local tripled'                  '\btripled = 0n60'
 expect 'called from main in the exe'        'app!main::main' 2

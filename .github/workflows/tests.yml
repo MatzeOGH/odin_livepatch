@@ -8,7 +8,7 @@ on:
 jobs:
   windows:
     name: Windows x64 -o:${{ matrix.opt }}
-    runs-on: windows-2025
+    runs-on: windows-2025 # its image has cdb, for the debugger tests
     timeout-minutes: 30
     strategy:
       fail-fast: false # each -o: level reports on its own
@@ -28,28 +28,6 @@ jobs:
           Expand-Archive odin.zip "$env:RUNNER_TEMP\odin"
           (Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1).DirectoryName >> $env:GITHUB_PATH
 
-      - run: odin version
-
-      - name: Tests
-        shell: pwsh
-        run: tests\ci\run.ps1
-
-  debugger:
-    name: Windows x64 debugger (cdb)
-    runs-on: windows-2025 # its image has cdb
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get the latest Odin release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download -R odin-lang/Odin --pattern 'odin-windows-amd64-*.zip' -O odin.zip
-          Expand-Archive odin.zip "$env:RUNNER_TEMP\odin"
-          (Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1).DirectoryName >> $env:GITHUB_PATH
-
       - name: Show the toolchain
         shell: pwsh
         run: |
@@ -57,7 +35,12 @@ jobs:
           $cdb = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
           "cdb: $cdb, found: $(Test-Path $cdb)"
 
-      - name: Debugger tests
+      - name: Tests
+        shell: pwsh
+        run: tests\ci\run.ps1
+
+      - name: Debugger tests (cdb)
+        if: success() || failure() # also when the tests failed
         shell: pwsh
         run: tests\ci\run_debugger.ps1
 
@@ -65,6 +48,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cdb-logs
+          name: cdb-logs-${{ matrix.opt }}
           path: tests/ci/*/cdb.log
           if-no-files-found: ignore

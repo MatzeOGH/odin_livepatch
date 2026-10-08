@@ -52,7 +52,7 @@ tests\ci\change_proc\app.exe
 
 ## Debugger tests
 
-`tests\ci\run_debugger.ps1` runs each test that has a `debugger.ps1` under cdb, at `-o:none` only. Optimized code shows locals as optimized out. `run.ps1` runs these tests too, but without a debugger. `debugger.ps1` sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch module of that version, and cdb must read the values there. The script then compares the cdb output with the expected values, as the gdb and lldb scripts of the Linux suites do.
+`tests\ci\run_debugger.ps1` runs each test that has a `debugger.ps1` under cdb, at the `-o:` level in `OPT` (default: `none`). `run.ps1` runs these tests too, but without a debugger. `debugger.ps1` sets breakpoints before the program starts, on procedures that only one patch has. Each breakpoint must stop in the patch module of that version, and cdb must read the values there. The script then compares the cdb output with the expected values, as the gdb and lldb scripts of the Linux suites do.
 
 | Test | What cdb must read |
 | --- | --- |
@@ -63,4 +63,4 @@ cdb is in the Debugging Tools for Windows, a feature of the Windows SDK. When cd
 
 ## CI
 
-The workflow runs on `windows-2025`. It has one job for each `-o:` level, and one job for the debugger tests (`Windows x64 debugger (cdb)`). The image of this runner has cdb. The workflow uses the latest release of Odin, not Odin master. The debugger job uploads the cdb logs.
+The workflow runs on `windows-2025`, with one job for each `-o:` level. Each job runs the tests, then the debugger tests as a separate step (`Debugger tests (cdb)`), also when the tests failed. The image of this runner has cdb. The workflow uses the latest release of Odin, not Odin master. Each job uploads its cdb logs.

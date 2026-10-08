@@ -10,14 +10,22 @@ if (-not (Test-Path $cdb)) {
 }
 
 # Each breakpoint prints what it reads, then continues. Frame 1 is the patched caller.
-# loop_v3 stops only when its argument i (in rcx) is 5.
+# loop_v3 stops only when its argument i (in rcx) is 5. A marker line (STOP ...) starts each stop.
+# cdb resolves a breakpoint on a symbol only with its module name, and the name of a patch
+# module (lp_<pid>_g<n>) is not known before the patch. Thus, each time a module lp_* loads,
+# cdb runs cdb_on_load.txt, which sets the breakpoints with bm in all modules lp_*.
+$on_load = @(
+    'bm lp_*!main::stop_v2 ".echo STOP v2; k 6; .frame 1; dx p; dx total; dq app!main::counter L1; g"'
+    'bm lp_*!main::loop_v3 "j (@rcx == 5) ''.echo STOP v3 loop; .frame 1; dx i; dx sum; g'' ; ''g''"'
+    'bm lp_*!main::stop_v3 ".echo STOP v3 end; .frame 1; dx -r1 values; dx total; dq app!main::counter L1; g"'
+    'bm lp_*!main::stop_v4 ".echo STOP v4; k 3; .frame 1; dx n; dx label; dx doubled; g"'
+    'g'
+)
+$on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'
+Set-Content $on_load_file $on_load
 $commands = @(
     '.lines -e'
-    'bu main::stop_v2 ".echo STOP v2; k 6; .frame 1; dx p; dx total; dq app!main::counter L1; g"'
-    'bu main::loop_v3 "j (@rcx == 5) ''.echo STOP v3 loop; .frame 1; dx i; dx sum; g'' ; ''g''"'
-    'bu main::stop_v3 ".echo STOP v3 end; .frame 1; dx -r1 values; dx total; dq app!main::counter L1; g"'
-    'bu main::stop_v4 ".echo STOP v4; k 3; .frame 1; dx n; dx label; dx doubled; g"'
-    'bl'
+    "sxe -c `"`$`$<$on_load_file`" ld:lp_*"
     'g'
 )
 $commands_file = Join-Path $PSScriptRoot 'cdb_commands.txt'
@@ -46,10 +54,10 @@ expect 'scene_v2 in the patch module'       'lp_\w+!main::scene_v2'
 expect 'drive in the stack'                 '!main::drive'
 expect 'main of the exe in the stack'       'app!main::main'
 Write-Host 'v3: a conditional breakpoint in a loop, an array, the global as v2 left it'
-expect 'stopped once in the loop'           'STOP v3 loop' 1
+expect 'stopped once in the loop'           '^STOP v3 loop\s*$' 1
 expect 'loop variable i'                    '\bi\s*:\s*5\b'
 expect 'sum so far'                         '\bsum\s*:\s*15\b'
-expect 'stopped after the loop'             'STOP v3 end'
+expect 'stopped after the loop'             '^STOP v3 end\s*$'
 expect 'array values[0]'                    '\[0\]\s*:\s*66\b'
 expect 'array values[1]'                    '\[1\]\s*:\s*1\b'
 expect 'array values[2]'                    '\[2\]\s*:\s*14\b'
@@ -61,6 +69,6 @@ expect 'argument n'                         '\bn\s*:\s*3\b'
 expect 'string argument label'              'four'
 expect 'local doubled'                      'doubled\s*:\s*12\b'
 expect 'the program finished'               'ALL OK'
-$loops = ([regex]::Matches($text, 'STOP v3 loop')).Count
+$loops = ([regex]::Matches($text, '(?m)^STOP v3 loop\s*$')).Count
 if ($loops -ne 1) { Write-Host "  FAIL  the loop breakpoint stopped $loops times, not 1"; $failed = $true }
 if ($failed) { exit 1 }
