@@ -1,7 +1,7 @@
 name: odin master
 
-# Builds Odin master once per platform and uploads it as the artifacts odin-windows and
-# odin-linux. Called by tests.yml and debugger.yml.
+# Builds Odin master once per platform and uploads it as the artifacts odin-windows,
+# odin-linux and odin-macos-arm. Called by tests.yml and debugger.yml.
 on:
   workflow_call:
 
@@ -49,5 +49,26 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: odin-linux
+          path: odin.tar.gz
+          retention-days: 1
+
+  odin-macos-arm:
+    name: Build Odin master (macOS ARM)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - name: Install LLVM
+        run: brew install llvm@20
+      - name: Build (same recipe as Odin's own CI)
+        # odin links libLLVM from Homebrew. The test job must install llvm@20 too.
+        run: CPPFLAGS="$CPPFLAGS -I/opt/homebrew/opt/llvm@20/include" LDFLAGS="$LDFLAGS -L/usr/lib/system -L/usr/lib -L/opt/homebrew/opt/llvm@20/lib" LLVM_CONFIG=/opt/homebrew/opt/llvm@20/bin/llvm-config ./build_odin.sh release
+      - name: Pack
+        run: tar -czf odin.tar.gz odin base core shared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-macos-arm
           path: odin.tar.gz
           retention-days: 1

@@ -1,6 +1,6 @@
 # CI tests
 
-Each directory here is one test. GitHub Actions runs all of them on Windows and Linux (`.github/workflows/tests.yml`).
+Each directory here is one test. GitHub Actions runs all of them on Windows, Linux and macOS ARM (`.github/workflows/tests.yml`).
 
 ## Rules for a test
 
@@ -98,5 +98,6 @@ The workflow uses the latest release of Odin, not Odin master.
 | --- | --- | --- |
 | `Windows x64` | `windows-2025` (its image has cdb) | `-o:none`, `-o:minimal`, `-o:speed` |
 | `Linux x64` | `ubuntu-latest`, with `lld`, `gdb` and `lldb` from apt | the three `-o:` levels, each as a PIE and with `-reloc-mode:static` |
+| `macOS ARM` | `macos-15`, with `llvm@20` and `lld` from Homebrew | the three `-o:` levels |
 
 Each job runs the tests. The `-o:none` jobs then run the debugger tests as a separate step, also when the tests failed. The output of each step has the full debugger log. Each job writes a table of the results to its summary.

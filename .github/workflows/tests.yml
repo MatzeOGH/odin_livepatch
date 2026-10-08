@@ -80,3 +80,43 @@ jobs:
       - name: Tests
         shell: pwsh
         run: tests/ci/run.ps1
+
+  macos-arm:
+    # Port in progress: the tests fail until livepatch patches macOS ARM.
+    name: macOS ARM -o:${{ matrix.opt }}
+    needs: odin
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each -o: level reports on its own
+      matrix:
+        opt: [none, minimal, speed]
+    env:
+      OPT: ${{ matrix.opt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM (odin links it) and the patch linker
+        run: brew install llvm@20 lld
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-macos-arm
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
+        run: |
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          uname -m
+          sw_vers
+          odin version
+          ld -v 2>&1 | head -n 1
+          /opt/homebrew/opt/lld/bin/ld64.lld --version
+
+      - name: Tests
+        shell: pwsh
+        run: tests/ci/run.ps1
