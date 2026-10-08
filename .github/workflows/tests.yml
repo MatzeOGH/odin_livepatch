@@ -44,6 +44,24 @@ jobs:
         # debugger tests read. Also when the tests failed.
         if: matrix.opt == 'none' && (success() || failure())
         shell: pwsh
+        env:
+          DEBUGGER: cdb
+        run: tests\ci\run_debugger.ps1
+
+      - name: Get the RAD Debugger
+        if: matrix.opt == 'none' && (success() || failure())
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.9.29-alpha -R EpicGamesExt/raddebugger --pattern raddbg.exe -D "$env:RUNNER_TEMP\raddbg"
+          "RADDBG=$env:RUNNER_TEMP\raddbg\raddbg.exe" >> $env:GITHUB_ENV
+
+      - name: Debugger tests (raddbg)
+        if: matrix.opt == 'none' && (success() || failure())
+        shell: pwsh
+        env:
+          DEBUGGER: raddbg
         run: tests\ci\run_debugger.ps1
 
   linux:

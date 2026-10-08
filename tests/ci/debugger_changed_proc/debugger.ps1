@@ -18,8 +18,10 @@ $bp_commands = '".echo STOP; k 3; dv; g"'
 # start. The name of a patch module (lp_<pid>_g<n>) is not known before the patch. Thus, each time
 # a module lp_* loads, cdb runs cdb_on_load.txt, which sets the breakpoint in each module lp_*
 # (lm1m lists their names).
+# .foreach replaces only a whole token, so the name goes into the alias ModName first. A
+# .block expands the alias.
 $on_load = @(
-    ".foreach (PATCHMOD {lm1m m lp_*}) { bp ``PATCHMOD!main.odin:$line`` $bp_commands }"
+    ".foreach (PATCHMOD {lm1m m lp_*}) { aS ModName PATCHMOD; .block { bp ``$`{ModName}!main.odin:$line`` $bp_commands } }"
     'g'
 )
 $on_load_file = Join-Path $PSScriptRoot 'cdb_on_load.txt'
