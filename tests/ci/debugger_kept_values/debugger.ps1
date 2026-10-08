@@ -11,7 +11,7 @@ if (-not (Test-Path $cdb)) {
 
 # At each stop: select bump (frame 1), read the @static calls and the globals, continue. A failed
 # dx does not stop the commands (added_global is not in v1).
-$read = '".echo STOP; k 2; .frame 1; dx calls; dx main::total; dx main::tl_value; dx main::added_global; g"'
+$read = '".echo STOP; k 2; .frame 1; dx calls; dx total; dx tl_value; dx added_global; g"'
 # The exe gets the breakpoint at the start. cdb resolves a breakpoint on a symbol only with its
 # module name, and the name of a patch module (lp_<pid>_g<n>) is not known before the patch. Thus,
 # each time a module lp_* loads, cdb runs cdb_on_load.txt, which sets it in all modules lp_*.
