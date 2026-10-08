@@ -8,7 +8,6 @@ on:
 jobs:
   # The tests do not import vendor:, so no LFS and no vendor/ folder.
   odin-windows:
-    if: false # macos-arm branch: macOS only
     name: Build Odin master (Windows)
     runs-on: windows-2025
     timeout-minutes: 20
@@ -30,7 +29,6 @@ jobs:
           retention-days: 1
 
   odin-linux:
-    if: false # macos-arm branch: macOS only
     name: Build Odin master (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20

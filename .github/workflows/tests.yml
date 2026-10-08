@@ -10,7 +10,6 @@ jobs:
     uses: ./.github/workflows/odin-master.yml
 
   windows:
-    if: false # macos-arm branch: macOS only
     name: Windows x64 -o:${{ matrix.opt }}
     needs: odin
     runs-on: windows-2025
@@ -45,7 +44,6 @@ jobs:
         run: tests\ci\run.ps1
 
   linux:
-    if: false # macos-arm branch: macOS only
     name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
     needs: odin
     runs-on: ubuntu-latest

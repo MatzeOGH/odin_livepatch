@@ -9,7 +9,7 @@ Each directory here is one test. GitHub Actions runs all of them on Windows, Lin
 - A test for one system has only the build script of that system. The runner skips it on the other system. For example, `reject_global_grew` and `thread_blocks_signal` have only `build.sh`.
 - `VERSION :: #config(VERSION, 1)` selects the version of the code. Use `when VERSION == N` for code that changes shape. The source files do not change during a test.
 - The exe is version 1. The test then applies version 2 and version 3 as patches, or more. Two patches find errors in a patch that works only one time.
-- Each test runs at `-o:none`, `-o:minimal` and `-o:speed`. On Linux, each test also runs as a PIE and with `-reloc-mode:static`. Each test must also build with `LIVEPATCH=false`.
+- Each test runs at `-o:none`, `-o:minimal` and `-o:speed`. On Linux, each test also runs as a PIE and with `-reloc-mode:static`. Each test must also build with `LIVEPATCH=false`. The runner does this build at one `-o:` level only (`-o:none`, or the first level of the run): the level does not change it.
 - The functional tests do not use the source watcher. The `watcher` test checks it on its own.
 
 To add a test, copy a directory and change `main.odin`. The runner and the workflow find the new directory.

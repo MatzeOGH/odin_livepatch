@@ -13,11 +13,9 @@ env:
 
 jobs:
   odin:
-    if: false # macos-arm branch: macOS only
     uses: ./.github/workflows/odin-master.yml
 
   windows:
-    if: false # macos-arm branch: macOS only
     name: Windows x64 ${{ matrix.debugger }}
     needs: odin
     runs-on: windows-2025 # its image has cdb
@@ -64,7 +62,6 @@ jobs:
         run: tests\ci\run_debugger.ps1
 
   linux:
-    if: false # macos-arm branch: macOS only
     name: Linux x64 ${{ matrix.debugger }} ${{ matrix.reloc }}
     needs: odin
     runs-on: ubuntu-latest

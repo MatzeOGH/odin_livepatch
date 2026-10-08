@@ -1,4 +1,4 @@
-# Runs each test in tests\ci, then builds it with LIVEPATCH=false. Windows: build.bat and app.exe.
+# Runs each test in tests\ci, then builds it one time with LIVEPATCH=false. Windows: build.bat and app.exe.
 # Linux: build.sh and app. A test that has no build script for this system is skipped.
 # OPT is the -o: level (default: none, minimal and speed). ODIN is the compiler (default: odin on PATH).
 # Linux: RELOC=static builds with -reloc-mode:static (default: a PIE).
@@ -21,6 +21,8 @@ function build($d) {
 }
 
 $opts = if ($env:OPT) { @($env:OPT) } else { @('none', 'minimal', 'speed') }
+# The level of the LIVEPATCH=false build. In CI, only the -o:none jobs do it.
+$off_opt = if ($opts -contains 'none') { 'none' } else { $opts[0] }
 $failed = @()
 $rows = @()
 Remove-Item Env:VERSION, Env:LIVEPATCH -ErrorAction Ignore # the exe must have version 1
@@ -49,11 +51,14 @@ foreach ($opt in $opts) {
             }
         }
 
-        # The code must also build with livepatch off
-        $env:LIVEPATCH = 'false'
-        build $d
-        if ($LASTEXITCODE -ne 0) { $problems += 'LIVEPATCH=false build failed' }
-        Remove-Item Env:LIVEPATCH
+        # The code must also build with livepatch off. The -o: level does not change that, so it
+        # builds one time.
+        if ($opt -eq $off_opt) {
+            $env:LIVEPATCH = 'false'
+            build $d
+            if ($LASTEXITCODE -ne 0) { $problems += 'LIVEPATCH=false build failed' }
+            Remove-Item Env:LIVEPATCH
+        }
 
         if ($problems) { $failed += "$t -o:$opt" }
         $rows += [pscustomobject]@{ Test = $t; Opt = $opt; Problems = $problems }
