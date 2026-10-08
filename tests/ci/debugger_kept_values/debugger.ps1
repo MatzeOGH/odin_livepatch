@@ -45,6 +45,9 @@ function expect($label, $pattern, $count = 1) {
 expect 'stopped three times'                '^STOP\s*$' 3
 expect 'v1: in bump of the exe'             'app!main::bump\+0x[0-9a-f]+ \['
 expect 'v2, v3: in bump of a patch module'  'lp_\w+!main::bump\+0x[0-9a-f]+ \[' 2
+expect 'v1: @static calls is 1'             '^calls\s*:\s*1\b'
+# In a patch module, the record of calls is a reference to the live storage (see Debug_Types in
+# livepatch): dx shows the value with the type __int64 &.
 expect 'v3: @static calls is 3'             '^calls\s*:\s*3\b'
 expect 'v1: global total'                   'total\s*:\s*101\b'
 expect 'v3: global total'                   'total\s*:\s*106\b'

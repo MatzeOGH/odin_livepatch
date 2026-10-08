@@ -10,13 +10,16 @@ if ! command -v "$GDB" > /dev/null 2>&1; then
 	exit 0
 fi
 cd "$DIR" || exit 1
+# The line of the breakpoint: it has the comment "the debugger breaks here"
+LINE=$(grep -n 'the debugger breaks here' main.odin | cut -d: -f1)
 
 # Each -ex runs on its own, so a command that fails (added_global is not in v1) does not stop the
-# next ones. The breakpoint on stop_here gets a location in the exe and in each patch. patch()
+# next ones. The breakpoint on the line in stop_here gets a location in the exe and in each
+# patch, and only the location in the newest code runs. patch()
 # stops the other threads with signal 62, which gdb must give to the program. At each stop: go up
 # to bump, read its locals (with the @static calls) and the globals, continue.
 set -- --batch --nx -ex 'set pagination off' -ex 'set breakpoint pending on' \
-	-ex 'handle SIG62 nostop noprint pass' -ex 'break main::stop_here' -ex run
+	-ex 'handle SIG62 nostop noprint pass' -ex "break main.odin:$LINE" -ex run
 for stop in 1 2 3; do
 	set -- "$@" -ex 'echo STOP\n' -ex up -ex 'info locals' -ex 'print total' -ex 'print tl_value' \
 		-ex 'print added_global' -ex continue

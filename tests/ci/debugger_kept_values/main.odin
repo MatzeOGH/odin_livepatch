@@ -22,10 +22,12 @@ when VERSION >= 2 {
 }
 
 // The debugger stops here. It writes a global: at -o:speed, LLVM removes a call to a procedure
-// that does nothing.
+// that does nothing. gdb and lldb break on the line in the body, not on the entry. After a patch, a
+// call goes through the entry in the exe to the body in the patch, so a breakpoint on the entry
+// would stop two times for each call.
 stops: int
 stop_here :: #force_no_inline proc() {
-	stops += VERSION
+	stops += VERSION // the debugger breaks here
 }
 
 // Returns the number of calls

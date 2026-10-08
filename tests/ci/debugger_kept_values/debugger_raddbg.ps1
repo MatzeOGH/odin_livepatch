@@ -1,7 +1,8 @@
-# Runs app.exe under the RAD Debugger. A breakpoint on a source line of work, which the exe has and
-# each patch changes, must stop in the body of the exe, then of v2, then of v3, and never in an old
-# body. Run build.bat first. RADDBG is raddbg.exe (default: raddbg on PATH). Without it, the test is
-# skipped, except in CI ($env:CI), where it fails.
+# Runs app.exe under the RAD Debugger. At a breakpoint in bump in each version, raddbg must read the
+# values that the code uses: the @static calls, the global that v2 adds, a @thread_local and a
+# global of the exe. In a patch module, the debug info gives these as references to the live
+# storage (see Debug_Types in livepatch). Run build.bat first. RADDBG is raddbg.exe (default:
+# raddbg on PATH). Without it, the test is skipped, except in CI ($env:CI), where it fails.
 #
 # The script controls raddbg through its IPC port (TCP, 127.0.0.1:7423): it sends a command as text,
 # and raddbg replies with the output of the command. raddbg runs the commands only when it has a
@@ -15,8 +16,8 @@ if (-not $raddbg -or -not (Test-Path $raddbg)) {
 }
 
 $main = Join-Path $PSScriptRoot 'main.odin'
-# The line of the breakpoint: it has the comment "the debugger breaks here"
-$line = (Select-String -Path $main -Pattern 'the debugger breaks here').LineNumber
+# The line of the breakpoint in bump: it has the comment "the debugger reads the values in this frame"
+$line = (Select-String -Path $main -Pattern 'the debugger reads the values in this frame').LineNumber
 $log = Join-Path $PSScriptRoot 'raddbg.log'
 Set-Content $log ''
 
@@ -70,6 +71,18 @@ function wait_stop($after, $seconds = 120) {
     return ''
 }
 
+# Right after a stop, eval can give the value of the last stop (or 0): raddbg updates its
+# evaluation cache later. Thus the test asks again until the value is correct.
+function eval_is($expression, $want) {
+    $start = Get-Date
+    do {
+        $eval = ipc "eval $expression"
+        if ($eval -match "value:\s+`"$want`"") { return $true }
+        Start-Sleep -Milliseconds 300
+    } while (((Get-Date) - $start).TotalSeconds -lt 10)
+    return $false
+}
+
 # A user file of its own: the test must not use or change the settings of the person who runs it
 $user = Join-Path $PSScriptRoot 'test.raddbg_user'
 Remove-Item -ErrorAction Ignore $user
@@ -99,26 +112,17 @@ try {
             check "v${v}: stopped" ($state -ne '')
             if (-not $state) { break }
             $module = if ($state -match 'ip_module: "([^"]*)"') { $Matches[1] } else { '' }
-            $symbol = if ($state -match 'ip_voff_symbol: "([^"]*)"') { $Matches[1] } else { '' }
             $want_module = if ($v -eq 1) { '^app\.exe$' } else { '^lp_\w+\.dll$' }
-            check "v${v}: in work ($symbol)" ($symbol -match '^(main::)?work$')
-            check "v${v}: in the module of v$v ($module)" ($module -match $want_module)
-            check "v${v}: on line $line" ($state -match "(?m)^\s*line_num:\s+$line\s*$")
-            # Right after a stop, eval can give the value of the last stop (or 0): raddbg updates
-            # its evaluation cache later. Thus the test asks again until the value is correct.
-            $start = Get-Date
-            do {
-                $eval = ipc 'eval body_version'
-                $ok = $eval -match "value:\s+`"$v`""
-                if (-not $ok) { Start-Sleep -Milliseconds 300 }
-            } while (-not $ok -and ((Get-Date) - $start).TotalSeconds -lt 10)
-            check "v${v}: body_version is $v" $ok
+            check "v${v}: in bump of the module of v$v ($module)" ($module -match $want_module)
+            $sum = $v * ($v + 1) / 2
+            check "v${v}: @static calls is $v" (eval_is 'calls' $v)
+            check "v${v}: global total is $(100 + $sum)" (eval_is 'total' (100 + $sum))
+            check "v${v}: @thread_local tl_value is $(7 + $sum)" (eval_is 'tl_value' (7 + $sum))
+            if ($v -ge 2) {
+                check "v${v}: global added_global is $(999 + $sum)" (eval_is 'added_global' (999 + $sum))
+            }
             ipc 'continue' | Out-Null
         }
-        # After v3, the program runs to its end: a fourth stop at the breakpoint would be an old body
-        $end = wait_stop $stops 60
-        $fourth = $end -match 'ip_voff_symbol: "main::work"' -and $end -match "(?m)^\s*line_num:\s+$line\s*$"
-        check 'no stop in an old body' (-not $fourth)
     }
 } finally {
     ipc 'kill_all' | Out-Null
@@ -127,6 +131,8 @@ try {
     if (-not $debugger.HasExited) { Stop-Process -Id $debugger.Id -Force -ErrorAction Ignore }
 }
 
-Write-Host "--- raddbg IPC log ($log):"
-Get-Content $log | Write-Host
-if ($failed) { exit 1 }
+if ($failed) {
+    Write-Host "--- raddbg IPC log ($log):"
+    Get-Content $log | Write-Host
+    exit 1
+}

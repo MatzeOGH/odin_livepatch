@@ -33,6 +33,12 @@ call_guarded :: #force_no_inline proc(n: int) -> int {
 	return guarded(n)
 }
 
+// No frame. At -o:none on Linux, it starts with a spill of context to the red zone
+// (mov [rsp-8], rdi), which a redirect must keep under a breakpoint.
+leaf :: #force_no_inline proc() -> int {
+	return 10 + VERSION
+}
+
 // Makes the first bytes of a procedure writable, as a debugger does to write a breakpoint
 make_code_writable :: proc(entry: rawptr) {
 	when ODIN_OS == .Windows {
@@ -58,15 +64,26 @@ setup :: proc() {}
 checks :: proc(v: int) {
 	check("call from the exe", guarded(1), 2016 + v)
 	check("direct call from patch code", call_guarded(1), 2016 + v)
+	check("frameless procedure", leaf(), 10 + v)
 }
+
+// Optimized code can start leaf with an instruction that a redirect cannot keep
+LEAF_BREAKPOINT :: ODIN_OPTIMIZATION_MODE == .None
 
 @(optimization_mode="none")
 main :: proc() {
 	fmt.println("v1")
 	checks(1)
 	original := breakpoint_set(rawptr(guarded))
+	original_leaf: u8
+	when LEAF_BREAKPOINT {
+		original_leaf = breakpoint_set(rawptr(leaf))
+	}
 	err := patch_to(2)
 	(^u8)(rawptr(guarded))^ = original // the debugger removes the breakpoint
+	when LEAF_BREAKPOINT {
+		(^u8)(rawptr(leaf))^ = original_leaf
+	}
 	check("patch", err, nil)
 	checks(2)
 	check("patch", patch_to(3), nil)

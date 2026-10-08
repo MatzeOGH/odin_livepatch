@@ -10,6 +10,9 @@ if ! command -v "$LLDB" > /dev/null 2>&1; then
 	exit 0
 fi
 cd "$DIR" || exit 1
+# The line of the breakpoint in stop_here: it has the comment "the debugger breaks here". Only the
+# location in the newest code runs.
+LINE=$(grep -n 'the debugger breaks here' main.odin | cut -d: -f1)
 
 # A command that fails (added_global is not in v1) must not stop the next ones. -O sets this
 # before lldb reads the file: a setting in the file does not apply to the file itself. Each
@@ -25,7 +28,7 @@ target variable added_global
 continue'
 cat > lldb_commands.txt << EOF
 settings set plugin.jit-loader.gdb.enable on
-breakpoint set -r ^main::stop_here$
+breakpoint set -f main.odin -l $LINE
 process launch --stop-at-entry
 process handle 62 --stop false --notify false --pass true
 continue
@@ -50,6 +53,10 @@ expect 'v1: @thread_local tl_value'              ' tl_value = 8$'
 expect 'v3: @thread_local tl_value'              ' tl_value = 13$'
 expect 'v2: global that v2 adds'                 ' added_global = 1002$'
 expect 'v3: the same global, kept'               ' added_global = 1005$'
+# target variable lists the variable of the exe and of each patch module. The debug info of a patch
+# gives a thread-local in the TLS block of the exe (see rewrite_debug_thread_local), so no entry may
+# lack TLS data.
+if grep -q 'No TLS data' lldb.log; then echo '  FAIL  each @thread_local entry has a value (found "No TLS data")'; failed=1; else echo '  OK    each @thread_local entry has a value'; fi
 expect 'the program finished'                    'ALL OK'
 expect 'it exited normally'                      'exited with status = 0'
 exit $failed
