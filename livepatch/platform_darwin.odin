@@ -10,6 +10,10 @@ import "core:strings"
 import "core:sys/darwin"
 import "core:sys/posix"
 @(require) import "core:time"
+
+ODIN_EXE_NAME :: "odin"
+PAGE_SIZE :: uintptr(0x4000)
+
 foreign import libSystem "system:System"
 
 @(default_calling_convention = "c")
@@ -19,6 +23,26 @@ foreign libSystem {
 	vm_deallocate          :: proc(task: darwin.mach_port_t, address: uintptr, size: uint) -> i32 ---
 	sys_icache_invalidate  :: proc(start: rawptr, size: uint) ---
 	pthread_mach_thread_np :: proc(thread: posix.pthread_t) -> darwin.thread_act_t ---
+}
+
+PROT_RX      :: posix.Prot_Flags{.READ, .EXEC}
+PROT_RW      :: posix.Prot_Flags{.READ, .WRITE}
+RTLD_DEFAULT :: posix.Symbol_Table(~uintptr(1)) // (void *)-2
+
+
+exe_view:  Macho_View
+exe_slide: uintptr
+exe_lo:    uintptr // without __PAGEZERO
+exe_hi:    uintptr
+
+exe_probe: u8
+
+exe_base :: proc "contextless" () -> uintptr {
+	return exe_lo
+}
+
+exe_image_size :: proc "contextless" () -> uintptr {
+	return exe_hi - exe_lo
 }
 @(private = "file") found_linker: string
 
