@@ -44,6 +44,27 @@ exe_base :: proc "contextless" () -> uintptr {
 exe_image_size :: proc "contextless" () -> uintptr {
 	return exe_hi - exe_lo
 }
+mapped_sizes: map[uintptr]int
+alloc_error:  os.Error
+
+page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
+	protection := commit ? PROT_RW : posix.PROT_NONE
+	memory := posix.mmap(rawptr(addr), uint(size), protection, {.PRIVATE, .ANONYMOUS})
+	if memory == posix.MAP_FAILED {
+		alloc_error = errno_error()
+		return nil
+	}
+	if uintptr(memory) != addr {
+		posix.munmap(memory, uint(size))
+		return nil
+	}
+	mapped_sizes[addr] = size
+	return memory
+}
+
+last_alloc_error :: proc() -> os.Error {
+	return alloc_error
+}
 @(private = "file") found_linker: string
 
 find_linker :: proc() -> (path: string, ok: bool) {
