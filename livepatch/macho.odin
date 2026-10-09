@@ -251,9 +251,6 @@ fixed_name :: proc(b: ^[16]u8) -> string {
 	return strings.truncate_to_byte(string(b[:]), 0)
 }
 
-macho_section_name :: proc(sh: ^Section_64) -> string { return fixed_name(&sh.sectname) }
-macho_segment_name :: proc(sh: ^Section_64) -> string { return fixed_name(&sh.segname) }
-
 macho_raw_name :: proc(v: ^Macho_View, sym: ^Nlist_64) -> string {
 	if int(sym.n_strx) >= len(v.strtab) {
 		return ""

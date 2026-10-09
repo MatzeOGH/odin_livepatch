@@ -49,7 +49,7 @@ test_macho_exe :: proc(t: ^testing.T) {
 		}
 	}
 	for section in view.sections {
-		if macho_segment_name(section) == "__TEXT" && macho_section_name(section) == "__text" {
+		if fixed_name(&section.segname) == "__TEXT" && fixed_name(&section.sectname) == "__text" {
 			has_text = true
 			testing.expect(t, macho_is_code(section), "__TEXT,__text holds code")
 			bytes, bytes_ok := macho_section_bytes(data, section)
@@ -195,7 +195,7 @@ log_view :: proc(view: ^Macho_View) {
 	}
 	for section, index in view.sections {
 		log.infof("    section %2d %s,%-20s addr=0x%x size=0x%x offset=0x%x align=%d nreloc=%d type=0x%x flags=0x%x code=%v thread_local=%v",
-			index + 1, macho_segment_name(section), macho_section_name(section), section.addr, section.size, section.offset,
+			index + 1, fixed_name(&section.segname), fixed_name(&section.sectname), section.addr, section.size, section.offset,
 			section.align, section.nreloc, section.flags & SECTION_TYPE, section.flags, macho_is_code(section), macho_is_thread_local(section))
 	}
 	if symtab := view.symtab; symtab != nil {

@@ -280,7 +280,6 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 	return run_linker_command({linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
 }
 
-// Loads `<stem>.dll`, which must land at `base`, and reads its symbols from `<stem>.map`.
 load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object) -> (module: Patch_Module, err: Error) {
 	dll_path := strings.concatenate({stem, ".dll"}, context.temp_allocator)
 	map_path := strings.concatenate({stem, ".map"}, context.temp_allocator)
