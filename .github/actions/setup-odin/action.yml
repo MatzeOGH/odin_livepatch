@@ -1,0 +1,21 @@
+name: Set up Odin master
+description: Downloads the Odin master build of this runner's OS from the odin-* jobs of tests.yml and puts it on the PATH.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: odin-${{ runner.os }}-${{ runner.arch }}
+        path: ${{ runner.temp }}
+
+    - name: Unpack Odin master
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/odin" | Out-Null
+        tar -xzf "$env:RUNNER_TEMP/odin.tar.gz" -C "$env:RUNNER_TEMP/odin"
+        "$env:RUNNER_TEMP/odin" >> $env:GITHUB_PATH
+
+    - name: Show the Odin version
+      shell: pwsh
+      run: '& "$env:RUNNER_TEMP/odin/odin" version'

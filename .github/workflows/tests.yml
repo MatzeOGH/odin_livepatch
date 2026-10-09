@@ -1,19 +1,88 @@
 name: tests
 
+# Each platform is a chain: build Odin master -> tests at each -o: level. The -o:none job then
+# also runs the debugger tests: optimized code removes the locals and inlines the frames that the
+# debugger tests read. A platform does not wait for the Odin builds of the other platforms.
 on:
   push:
   pull_request:
   workflow_dispatch: # run by hand from the Actions tab
 
 jobs:
-  odin:
-    uses: ./.github/workflows/odin-master.yml
+  # The Odin builds upload the artifact odin-<runner.os>-<runner.arch>, which
+  # .github/actions/setup-odin downloads. The tests do not import vendor:, so no LFS and no
+  # vendor/ folder.
+  odin-windows:
+    name: Build Odin master (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: cmd
+        run: build.bat release
+      - name: Pack
+        shell: pwsh
+        run: tar -czf odin.tar.gz odin.exe LLVM-C.dll base core shared bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-${{ runner.os }}-${{ runner.arch }}
+          path: odin.tar.gz
+          retention-days: 1
+
+  odin-linux:
+    name: Build Odin master (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - name: Build (static, same recipe as the Odin nightly)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.24 sh -c '
+            apk add --no-cache musl-dev llvm20-dev clang20 build-base git mold lz4               libxml2-static llvm20-static zlib-static zstd-static make &&
+            git config --global --add safe.directory /src &&
+            ./ci/build_linux_static.sh
+          '
+      - name: Pack
+        # A tarball keeps the executable bit, upload-artifact does not.
+        run: tar -czf odin.tar.gz odin base core shared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-${{ runner.os }}-${{ runner.arch }}
+          path: odin.tar.gz
+          retention-days: 1
+
+  odin-macos-arm:
+    name: Build Odin master (macOS ARM)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: odin-lang/Odin
+      - name: Install LLVM
+        run: brew install llvm@20
+      - name: Build (same recipe as Odin's own CI)
+        # odin links libLLVM from Homebrew. The test job must install llvm@20 too.
+        run: CPPFLAGS="$CPPFLAGS -I/opt/homebrew/opt/llvm@20/include" LDFLAGS="$LDFLAGS -L/usr/lib/system -L/usr/lib -L/opt/homebrew/opt/llvm@20/lib" LLVM_CONFIG=/opt/homebrew/opt/llvm@20/bin/llvm-config ./build_odin.sh release
+      - name: Pack
+        run: tar -czf odin.tar.gz odin base core shared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odin-${{ runner.os }}-${{ runner.arch }}
+          path: odin.tar.gz
+          retention-days: 1
 
   windows:
     name: Windows x64 -o:${{ matrix.opt }}
-    needs: odin
-    runs-on: windows-2025
-    timeout-minutes: 30
+    needs: odin-windows
+    runs-on: windows-2025 # its image has cdb
+    timeout-minutes: 45
     strategy:
       fail-fast: false # each -o: level reports on its own
       matrix:
@@ -23,31 +92,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: odin-windows
-          path: ${{ runner.temp }}
-
-      - name: Unpack Odin master
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory "$env:RUNNER_TEMP\odin" | Out-Null
-          tar -xzf "$env:RUNNER_TEMP\odin.tar.gz" -C "$env:RUNNER_TEMP\odin"
-          "$env:RUNNER_TEMP\odin" >> $env:GITHUB_PATH
-
-      - name: Show the toolchain
-        shell: pwsh
-        run: odin version
+      - uses: ./.github/actions/setup-odin
 
       - name: Tests
         shell: pwsh
         run: tests\ci\run.ps1
 
+      - name: Get the RAD Debugger
+        if: matrix.opt == 'none' && !cancelled()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.9.29-alpha -R EpicGamesExt/raddebugger --pattern raddbg.exe -D "$env:RUNNER_TEMP\raddbg"
+          "RADDBG=$env:RUNNER_TEMP\raddbg\raddbg.exe" >> $env:GITHUB_ENV
+          $cdb = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+          "cdb: $cdb, found: $(Test-Path $cdb)"
+
+      # !cancelled(): the debugger results also show when the tests above fail
+      - name: Debugger tests (cdb, raddbg)
+        if: matrix.opt == 'none' && !cancelled()
+        shell: pwsh
+        run: tests\ci\run_debugger.ps1
+
   linux:
     name: Linux x64 -o:${{ matrix.opt }} ${{ matrix.reloc }}
-    needs: odin
+    needs: odin-linux
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false # each -o: level and each relocation mode reports on its own
       matrix:
@@ -59,32 +131,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the patch linker
-        run: sudo apt-get update && sudo apt-get install -y lld
+      - name: Install the patch linker (and at -o:none the debuggers)
+        run: sudo apt-get update && sudo apt-get install -y lld ${{ matrix.opt == 'none' && 'gdb lldb' || '' }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: odin-linux
-          path: ${{ runner.temp }}
-
-      - name: Unpack Odin master
-        run: |
-          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
-          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-odin
 
       - name: Show the toolchain
         run: |
-          odin version
           ld.lld --version
+          if [ "$OPT" = none ]; then gdb --version | head -n 1; lldb --version | head -n 1; fi
 
       - name: Tests
         shell: pwsh
         run: tests/ci/run.ps1
 
+      # !cancelled(): the debugger results also show when the tests above fail
+      - name: Debugger tests (gdb, lldb)
+        if: matrix.opt == 'none' && !cancelled()
+        shell: pwsh
+        run: tests/ci/run_debugger.ps1
+
   macos-arm:
     # Port in progress: only the tests that pass on macOS so far. Add a test here when it passes.
     name: macOS ARM -o:${{ matrix.opt }}
-    needs: odin
+    needs: odin-macos-arm
     runs-on: macos-15
     timeout-minutes: 30
     strategy:
@@ -99,21 +169,12 @@ jobs:
       - name: Install LLVM (odin links it) and the patch linker
         run: brew install llvm@20 lld
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: odin-macos-arm
-          path: ${{ runner.temp }}
-
-      - name: Unpack Odin master
-        run: |
-          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
-          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/setup-odin
 
       - name: Show the toolchain
         run: |
           uname -m
           sw_vers
-          odin version
           ld -v 2>&1 | head -n 1
           /opt/homebrew/opt/lld/bin/ld64.lld --version
 
@@ -145,93 +206,3 @@ jobs:
           name: livepatch-macos-arm-${{ matrix.opt }}
           path: tests/ci/*/livepatch*/
           if-no-files-found: ignore
-
-  # The debugger tests: each debugger is its own job, so a flaky debugger does not hide the
-  # patcher results. Only at -o:none: optimized code removes the locals and inlines the frames
-  # that the debugger tests read.
-  debugger-windows:
-    name: Windows x64 ${{ matrix.debugger }}
-    needs: odin
-    runs-on: windows-2025 # its image has cdb
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false # each debugger reports on its own
-      matrix:
-        debugger: [cdb, raddbg]
-    env:
-      OPT: none
-      DEBUGGER: ${{ matrix.debugger }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: odin-windows
-          path: ${{ runner.temp }}
-
-      - name: Unpack Odin master
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory "$env:RUNNER_TEMP\odin" | Out-Null
-          tar -xzf "$env:RUNNER_TEMP\odin.tar.gz" -C "$env:RUNNER_TEMP\odin"
-          "$env:RUNNER_TEMP\odin" >> $env:GITHUB_PATH
-
-      - name: Get the RAD Debugger
-        if: matrix.debugger == 'raddbg'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download v0.9.29-alpha -R EpicGamesExt/raddebugger --pattern raddbg.exe -D "$env:RUNNER_TEMP\raddbg"
-          "RADDBG=$env:RUNNER_TEMP\raddbg\raddbg.exe" >> $env:GITHUB_ENV
-
-      - name: Show the toolchain
-        shell: pwsh
-        run: |
-          odin version
-          $cdb = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
-          "cdb: $cdb, found: $(Test-Path $cdb)"
-
-      - name: Debugger tests
-        shell: pwsh
-        run: tests\ci\run_debugger.ps1
-
-  debugger-linux:
-    name: Linux x64 ${{ matrix.debugger }} ${{ matrix.reloc }}
-    needs: odin
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false # each debugger and each relocation mode reports on its own
-      matrix:
-        debugger: [gdb, lldb]
-        reloc: [pie, static] # static: -reloc-mode:static
-    env:
-      OPT: none
-      DEBUGGER: ${{ matrix.debugger }}
-      RELOC: ${{ matrix.reloc }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install the patch linker and the debugger
-        run: sudo apt-get update && sudo apt-get install -y lld ${{ matrix.debugger }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: odin-linux
-          path: ${{ runner.temp }}
-
-      - name: Unpack Odin master
-        run: |
-          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
-          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
-
-      - name: Show the toolchain
-        run: |
-          odin version
-          ld.lld --version
-          ${{ matrix.debugger }} --version | head -n 1
-
-      - name: Debugger tests
-        shell: pwsh
-        run: tests/ci/run_debugger.ps1
