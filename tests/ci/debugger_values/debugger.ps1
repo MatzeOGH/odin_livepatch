@@ -13,15 +13,14 @@ if (-not (Test-Path $cdb)) {
 # loop_v3 stops only when its argument i (in rcx) is 5. A marker line (STOP ...) starts each stop.
 # cdb cannot bind the loop variable i of scene_v3 (the debug info of Odin has no such local
 # there), so the test reads i as the argument in rcx. dv prints the locals that cdb sees.
-# The debug info of Odin gives the string argument label the type string *, but its slot holds
-# the string itself: the data pointer, then the length. Thus the test reads the two words of
-# the slot, and the text at the data pointer.
+# The debug info of Odin gives the string argument label the type string& (as clang does for a
+# struct that is passed by reference). Thus the test reads the fields len and data through it.
 # cdb resolves a breakpoint on a symbol only with its module name, and the name of a patch
 # module (lp_<pid>_g<n>) is not known before the patch. Thus, each time a module lp_* loads,
 # cdb runs cdb_on_load.txt, which sets the breakpoints with bm in all modules lp_*.
 # Optimized code removes the locals of v4. Then da fails, and an error stops the rest of the
 # command list, also its g. Thus the v4 stop reads the locals at -o:none only.
-$v4_reads = if ($env:OPT -and $env:OPT -ne 'none') { '' } else { '.frame 1; dx n; dq @@c++(&label) L2; da @@c++((unsigned char *)label) L4; dx doubled; ' }
+$v4_reads = if ($env:OPT -and $env:OPT -ne 'none') { '' } else { '.frame 1; dx n; dx label.len; da @@c++(label.data) L4; dx doubled; ' }
 $on_load = @(
     'bm lp_*!main::stop_v2 ".echo STOP v2; k 6; .frame 1; dx p; dx total; dq app!main::counter L1; g"'
     'bm lp_*!main::loop_v3 "j (@rcx == 5) ''.echo STOP v3 loop; r rcx; .frame 1; dv; dx sum; g'' ; ''g''"'
@@ -84,7 +83,7 @@ Write-Host 'v4: a procedure that only this patch has, with a string argument'
 expect 'stopped in the patch module'        'lp_\w+!main::stop_v4 \['
 expect_unoptimized 'added_helper in the stack'          'lp_\w+!main::added_helper'
 expect_unoptimized 'argument n'                         '\bn\s*:\s*3\b'
-expect_unoptimized 'string argument label: length'      '`[0-9a-f]{8}\s+00000000`00000004\s*$'
+expect_unoptimized 'string argument label: length'      'label\.len\s+:\s+4\b'
 expect_unoptimized 'string argument label: text'        '"four"'
 expect_unoptimized 'local doubled'                      'doubled\s*:\s*12\b'
 expect 'the program finished'               'ALL OK'

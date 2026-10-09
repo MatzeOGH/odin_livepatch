@@ -145,3 +145,93 @@ jobs:
           name: livepatch-macos-arm-${{ matrix.opt }}
           path: tests/ci/*/livepatch*/
           if-no-files-found: ignore
+
+  # The debugger tests: each debugger is its own job, so a flaky debugger does not hide the
+  # patcher results. Only at -o:none: optimized code removes the locals and inlines the frames
+  # that the debugger tests read.
+  debugger-windows:
+    name: Windows x64 ${{ matrix.debugger }}
+    needs: odin
+    runs-on: windows-2025 # its image has cdb
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each debugger reports on its own
+      matrix:
+        debugger: [cdb, raddbg]
+    env:
+      OPT: none
+      DEBUGGER: ${{ matrix.debugger }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-windows
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory "$env:RUNNER_TEMP\odin" | Out-Null
+          tar -xzf "$env:RUNNER_TEMP\odin.tar.gz" -C "$env:RUNNER_TEMP\odin"
+          "$env:RUNNER_TEMP\odin" >> $env:GITHUB_PATH
+
+      - name: Get the RAD Debugger
+        if: matrix.debugger == 'raddbg'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.9.29-alpha -R EpicGamesExt/raddebugger --pattern raddbg.exe -D "$env:RUNNER_TEMP\raddbg"
+          "RADDBG=$env:RUNNER_TEMP\raddbg\raddbg.exe" >> $env:GITHUB_ENV
+
+      - name: Show the toolchain
+        shell: pwsh
+        run: |
+          odin version
+          $cdb = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+          "cdb: $cdb, found: $(Test-Path $cdb)"
+
+      - name: Debugger tests
+        shell: pwsh
+        run: tests\ci\run_debugger.ps1
+
+  debugger-linux:
+    name: Linux x64 ${{ matrix.debugger }} ${{ matrix.reloc }}
+    needs: odin
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # each debugger and each relocation mode reports on its own
+      matrix:
+        debugger: [gdb, lldb]
+        reloc: [pie, static] # static: -reloc-mode:static
+    env:
+      OPT: none
+      DEBUGGER: ${{ matrix.debugger }}
+      RELOC: ${{ matrix.reloc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the patch linker and the debugger
+        run: sudo apt-get update && sudo apt-get install -y lld ${{ matrix.debugger }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: odin-linux
+          path: ${{ runner.temp }}
+
+      - name: Unpack Odin master
+        run: |
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
+          echo "$RUNNER_TEMP/odin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          odin version
+          ld.lld --version
+          ${{ matrix.debugger }} --version | head -n 1
+
+      - name: Debugger tests
+        shell: pwsh
+        run: tests/ci/run_debugger.ps1

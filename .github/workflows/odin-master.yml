@@ -1,7 +1,7 @@
 name: odin master
 
 # Builds Odin master once per platform and uploads it as the artifacts odin-windows,
-# odin-linux and odin-macos-arm. Called by tests.yml and debugger.yml.
+# odin-linux and odin-macos-arm. Called by tests.yml.
 on:
   workflow_call:
 
