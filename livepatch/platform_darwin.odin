@@ -65,6 +65,16 @@ page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
 last_alloc_error :: proc() -> os.Error {
 	return alloc_error
 }
+
+page_free :: proc(memory: rawptr) {
+	if size, found := mapped_sizes[uintptr(memory)]; found {
+		posix.munmap(memory, uint(size))
+		delete_key(&mapped_sizes, uintptr(memory))
+	}
+}
+errno_error :: proc() -> os.Error {
+	return os.Platform_Error(posix.errno())
+}
 @(private = "file") found_linker: string
 
 find_linker :: proc() -> (path: string, ok: bool) {
