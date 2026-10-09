@@ -1,6 +1,10 @@
 #+build darwin arm64
 package livepatch
 
+import "base:runtime"
+import "core:fmt"
+import "core:slice"
+import "core:strings"
 
 OBJECT_EXT :: ".o"
 ENTRY_SYMBOL :: "lp$entry"
@@ -35,6 +39,16 @@ Fixup_Kind :: enum u8 {
 }
 
 marker_count: int
+
+Macho_Rewrite :: struct {
+	o:          ^Loaded_Object,
+	merged:     ^Merged,
+	markers:    [dynamic]Nlist_64,
+	new_strs:   [dynamic]u8,
+	marker_at:  map[[2]u64]string, // section index, atom address -> its marker
+	by_section: [][dynamic]Section_Symbol, // section index -> its defined symbols, by address
+}
+
 Section_Symbol :: struct {
 	value: u64,
 	index: int,

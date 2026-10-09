@@ -251,6 +251,10 @@ alloc_near :: proc(size: int, commit := true) -> rawptr {
 	return nil
 }
 
+alloc_module :: proc(size: int) -> rawptr {
+	return alloc_near(size, commit = false)
+}
+
 is_near :: proc(addr: uintptr) -> bool {
 	LIMIT :: uintptr(0x4000_0000) // 1GB plus NEAR_WINDOW
 	return abs(int(addr) - int(exe_base())) < int(LIMIT)
