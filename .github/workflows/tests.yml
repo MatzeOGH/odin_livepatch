@@ -117,7 +117,7 @@ jobs:
           ld -v 2>&1 | head -n 1
           /opt/homebrew/opt/lld/bin/ld64.lld --version
 
-      - name: Unit tests (Mach-O parsing)
+      - name: Unit tests (Mach-O parsing, linker search)
         shell: bash # -o pipefail: the tee must not hide a failure
         # -use-separate-modules as in a livepatch build: else -o:speed makes every symbol internal
         # Debug logs, plain output, one test at a time, so the log reads in order
