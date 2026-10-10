@@ -10,21 +10,36 @@ on:
 
 jobs:
   # The Odin builds upload the artifact odin-<runner.os>-<runner.arch>, which
-  # .github/actions/setup-odin downloads. The tests do not import vendor:, so no LFS and no
-  # vendor/ folder.
+  # .github/actions/setup-odin downloads. The build is cached by the Odin master commit: when
+  # master did not change, the job only uploads the cached build. The tests do not import vendor:,
+  # so no LFS and no vendor/ folder.
   odin-windows:
     name: Build Odin master (Windows)
     runs-on: windows-2025
     timeout-minutes: 20
     steps:
+      - name: Find the Odin master commit
+        id: odin
+        shell: bash
+        run: echo "sha=$(git ls-remote https://github.com/odin-lang/Odin HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: odin.tar.gz
+          key: odin-${{ runner.os }}-${{ runner.arch }}-${{ steps.odin.outputs.sha }}
       - uses: actions/checkout@v4
+        if: steps.cache.outputs.cache-hit != 'true'
         with:
           repository: odin-lang/Odin
+          ref: ${{ steps.odin.outputs.sha }}
       - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.cache.outputs.cache-hit != 'true'
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: cmd
         run: build.bat release
       - name: Pack
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: tar -czf odin.tar.gz odin.exe LLVM-C.dll base core shared bin
       - uses: actions/upload-artifact@v4
@@ -38,10 +53,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Find the Odin master commit
+        id: odin
+        shell: bash
+        run: echo "sha=$(git ls-remote https://github.com/odin-lang/Odin HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: odin.tar.gz
+          key: odin-${{ runner.os }}-${{ runner.arch }}-${{ steps.odin.outputs.sha }}
       - uses: actions/checkout@v4
+        if: steps.cache.outputs.cache-hit != 'true'
         with:
           repository: odin-lang/Odin
+          ref: ${{ steps.odin.outputs.sha }}
       - name: Build (static, same recipe as the Odin nightly)
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.24 sh -c '
             apk add --no-cache musl-dev llvm20-dev clang20 build-base git mold lz4               libxml2-static llvm20-static zlib-static zstd-static make &&
@@ -49,6 +76,7 @@ jobs:
             ./ci/build_linux_static.sh
           '
       - name: Pack
+        if: steps.cache.outputs.cache-hit != 'true'
         # A tarball keeps the executable bit, upload-artifact does not.
         run: tar -czf odin.tar.gz odin base core shared
       - uses: actions/upload-artifact@v4
@@ -62,15 +90,29 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
+      - name: Find the Odin master commit
+        id: odin
+        shell: bash
+        run: echo "sha=$(git ls-remote https://github.com/odin-lang/Odin HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: odin.tar.gz
+          key: odin-${{ runner.os }}-${{ runner.arch }}-${{ steps.odin.outputs.sha }}
       - uses: actions/checkout@v4
+        if: steps.cache.outputs.cache-hit != 'true'
         with:
           repository: odin-lang/Odin
+          ref: ${{ steps.odin.outputs.sha }}
       - name: Install LLVM
+        if: steps.cache.outputs.cache-hit != 'true'
         run: brew install llvm@20
       - name: Build (same recipe as Odin's own CI)
+        if: steps.cache.outputs.cache-hit != 'true'
         # odin links libLLVM from Homebrew. The test job must install llvm@20 too.
         run: CPPFLAGS="$CPPFLAGS -I/opt/homebrew/opt/llvm@20/include" LDFLAGS="$LDFLAGS -L/usr/lib/system -L/usr/lib -L/opt/homebrew/opt/llvm@20/lib" LLVM_CONFIG=/opt/homebrew/opt/llvm@20/bin/llvm-config ./build_odin.sh release
       - name: Pack
+        if: steps.cache.outputs.cache-hit != 'true'
         run: tar -czf odin.tar.gz odin base core shared
       - uses: actions/upload-artifact@v4
         with:
