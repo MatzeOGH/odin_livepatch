@@ -44,57 +44,64 @@ load_exe_symbols :: proc(exe_path: string) {
 	}
 	probe_value: uintptr
 	found := false
-	for &sym in view.syms {
-		_ = elf_symbol_section_index(&view, &sym) or_continue
-		if elf_symbol_name(&view, &sym) == "livepatch::exe_probe" {
+
+	for sym in view.syms {
+		_ = elf_symbol_section_index(view, sym) or_continue
+		if elf_symbol_name(view, sym) == "livepatch::exe_probe" {
 			probe_value, found = uintptr(sym.value), true
 			break
 		}
 	}
+
 	if !found {
 		return
 	}
+
 	exe_bias = uintptr(&exe_probe) - probe_value
 
 	link_start, link_end := max(uintptr), uintptr(0)
-	for &segment in view.segments {
+	for segment in view.segments {
 		if segment.type == PT_LOAD {
 			link_start = min(link_start, uintptr(segment.vaddr))
 			link_end = max(link_end, uintptr(segment.vaddr + segment.memsz))
 		}
 	}
+
 	if link_start >= link_end {
 		return
 	}
+
 	exe_start = mem.align_backward_uintptr(exe_bias + link_start, PAGE_SIZE)
 	exe_end = mem.align_forward_uintptr(exe_bias + link_end, PAGE_SIZE)
 	exe_view = view
 
 	sections := make([dynamic]Exe_Section, context.allocator)
-	for &section in view.sections {
+
+	for section in view.sections {
 		if section.flags & SHF_ALLOC == 0 {
 			continue
 		}
 		append(&sections, Exe_Section{
-			name        = elf_section_name(&view, &section),
+			name        = elf_section_name(view, section),
 			start       = exe_bias + uintptr(section.addr),
 			size        = int(section.size),
 			code        = section.flags & SHF_EXECINSTR != 0,
-			variable    = section_holds_variables(&view, &section),
+			variable    = section_holds_variables(view, section),
 			file_offset = int(section.offset),
 			file_size   = 0 if section.type == SHT_NOBITS else int(section.size),
 		})
 	}
 	exe_sections = sections[:]
 
-	exe_symbols := read_elf_symbols(&view, exe_bias, context.allocator)
+	exe_symbols := read_elf_symbols(view, exe_bias)
 	slice.sort(exe_symbols.starts[:])
 	exe_map = exe_symbols.symbols
 	exe_starts = exe_symbols.starts[:]
 	exe_tls = exe_symbols.tls
-	for &sym in view.syms {
+
+	for sym in view.syms {
 		if sym.info.type == STT_OBJECT && sym.size > 0 {
-			_ = elf_symbol_section_index(&view, &sym) or_continue
+			_ = elf_symbol_section_index(view, sym) or_continue
 			address := exe_bias + uintptr(sym.value)
 			variable_sizes[address] = max(variable_sizes[address], int(sym.size))
 		}
@@ -109,6 +116,7 @@ exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, o
 		return
 	}
 	value := exe_tls[key] or_return
+
 	if !have_delta {
 		probe_value := exe_tls["livepatch::tls_probe"] or_return
 		thread_pointer: uintptr
@@ -119,6 +127,7 @@ exe_tls_offset :: proc(name: string, keys: Static_Keys = nil) -> (offset: i64, o
 		delta = i64(uintptr(&tls_probe)) - i64(thread_pointer) - i64(probe_value)
 		have_delta = true
 	}
+
 	return i64(value) + delta, true
 }
 
@@ -126,7 +135,8 @@ make_exe_writable :: proc() -> Error {
 	if system_page_size := posix.sysconf(._PAGESIZE); int(system_page_size) != int(PAGE_SIZE) {
 		return Commit_Failed{os_error = os.Platform_Error(linux.Errno.EINVAL)}
 	}
-	for &segment in exe_view.segments {
+
+	for segment in exe_view.segments {
 		if segment.type == PT_LOAD && segment.flags & PF_X != 0 {
 			page_start := mem.align_backward_uintptr(exe_bias + uintptr(segment.vaddr), PAGE_SIZE)
 			page_end := mem.align_forward_uintptr(exe_bias + uintptr(segment.vaddr + segment.memsz), PAGE_SIZE)
@@ -135,16 +145,19 @@ make_exe_writable :: proc() -> Error {
 			}
 		}
 	}
+
 	if type_table, found := exe_symbol_address("runtime::type_table"); found {
 		page_start := mem.align_backward_uintptr(uintptr(type_table), PAGE_SIZE)
 		page_end := mem.align_forward_uintptr(uintptr(type_table) + size_of([]rawptr), PAGE_SIZE)
 		protection := linux.Mem_Protection{.READ, .WRITE}
-		for &segment in exe_view.segments {
+
+		for segment in exe_view.segments {
 			start := exe_bias + uintptr(segment.vaddr)
 			if segment.type == PT_LOAD && segment.flags & PF_X != 0 && page_end > start && page_start < start + uintptr(segment.memsz) {
 				protection += {.EXEC} // shares a page with code
 			}
 		}
+
 		if protect_err := linux.mprotect(rawptr(page_start), uint(page_end - page_start), protection); protect_err != .NONE {
 			return Commit_Failed{os_error = os.Platform_Error(protect_err)}
 		}
@@ -252,8 +265,8 @@ stop_handler :: proc "c" (signal: posix.Signal, info: ^posix.siginfo_t, ucontext
 	thread_id := i32(linux.gettid())
 	listed := sync.atomic_load(&stop.count)
 	found := false
-	for i in 0 ..< listed {
-		entry := &stop.entries[i]
+
+	for &entry in stop.entries[:listed] {
 		if sync.atomic_load(&entry.tid) == thread_id {
 			entry.pc = (^uintptr)(uintptr(ucontext) + UCONTEXT_PC)^
 			sync.atomic_store(&entry.acked, generation)
@@ -261,9 +274,11 @@ stop_handler :: proc "c" (signal: posix.Signal, info: ^posix.siginfo_t, ucontext
 			break
 		}
 	}
+
 	if !found {
 		return // not listed yet: the signal for this stop follows
 	}
+
 	for {
 		released := sync.atomic_load(&stop.released)
 		if i32(u32(released) - generation) >= 0 {
@@ -277,6 +292,7 @@ install_stop_handler :: proc() -> bool {
 	if stop.installed {
 		return true
 	}
+
 	action: posix.sigaction_t
 	action.sa_sigaction = stop_handler
 	action.sa_flags = {.SIGINFO, .RESTART}
@@ -295,6 +311,7 @@ suspend_others :: proc() -> (handles: Suspended_Threads, ok: bool) {
 
 	pid := linux.getpid()
 	self_tid := i32(linux.gettid())
+
 	for {
 		added, fits := signal_new_threads(pid, self_tid, generation)
 		if !fits {
@@ -315,6 +332,7 @@ signal_new_threads :: proc(pid: linux.Pid, self_tid: i32, generation: u32) -> (a
 	}
 	defer linux.close(task_dir)
 	dirent_buffer: [8192]u8
+
 	for {
 		bytes_read, getdents_err := linux.getdents(task_dir, dirent_buffer[:])
 		if getdents_err != .NONE {
@@ -334,16 +352,17 @@ signal_new_threads :: proc(pid: linux.Pid, self_tid: i32, generation: u32) -> (a
 				fits = false
 				continue
 			}
+
 			entry := &stop.entries[stop.count]
-			entry.acked, entry.pc, entry.unpaused = 0, 0, false
-			if blocks_stop_signal(thread_id) {
-				entry.acked, entry.unpaused = generation, true
-				sync.atomic_store(&entry.tid, thread_id)
-				sync.atomic_store(&stop.count, stop.count + 1)
-				continue
-			}
+			unpaused := blocks_stop_signal(thread_id)
+			entry.acked, entry.pc, entry.unpaused = unpaused ? generation : 0, 0, unpaused
 			sync.atomic_store(&entry.tid, thread_id)
 			sync.atomic_store(&stop.count, stop.count + 1)
+
+			if unpaused {
+				continue
+			}
+
 			if kill_err := linux.tgkill(pid, linux.Pid(thread_id), linux.Signal(LIVEPATCH_SIGNAL)); kill_err != .NONE {
 				sync.atomic_store(&entry.tid, 0)
 				if kill_err != .ESRCH {
@@ -358,8 +377,7 @@ signal_new_threads :: proc(pid: linux.Pid, self_tid: i32, generation: u32) -> (a
 wait_for_acks :: proc(pid: linux.Pid, generation: u32) -> bool {
 	for _ in 0 ..< STOP_WAIT_ATTEMPTS {
 		all_acked := true
-		for i in 0 ..< stop.count {
-			entry := &stop.entries[i]
+		for &entry in stop.entries[:stop.count] {
 			thread_id := sync.atomic_load(&entry.tid)
 			if thread_id == 0 || sync.atomic_load(&entry.acked) == generation {
 				continue
@@ -379,8 +397,8 @@ wait_for_acks :: proc(pid: linux.Pid, generation: u32) -> bool {
 }
 
 is_listed :: proc(thread_id: i32) -> bool {
-	for i in 0 ..< stop.count {
-		if stop.entries[i].tid == thread_id {
+	for entry in stop.entries[:stop.count] {
+		if entry.tid == thread_id {
 			return true
 		}
 	}
@@ -409,8 +427,7 @@ blocks_stop_signal :: proc(thread_id: i32) -> bool {
 }
 
 ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
-	for i in 0 ..< stop.count {
-		entry := &stop.entries[i]
+	for &entry in stop.entries[:stop.count] {
 		if sync.atomic_load(&entry.tid) != 0 && !entry.unpaused && in_unwritten_site(entry.pc, unwritten) {
 			return true
 		}
@@ -419,8 +436,8 @@ ip_conflicts :: proc(handles: Suspended_Threads, unwritten: []rawptr) -> bool {
 }
 
 unpaused_threads :: proc() -> (count: int) {
-	for i in 0 ..< stop.count {
-		if stop.entries[i].unpaused && stop.entries[i].tid != 0 {
+	for entry in stop.entries[:stop.count] {
+		if entry.unpaused && entry.tid != 0 {
 			count += 1
 		}
 	}
@@ -542,7 +559,7 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 	}
 
 	start, end := max(uintptr), uintptr(0)
-	for &segment in view.segments {
+	for segment in view.segments {
 		if segment.type == PT_LOAD {
 			start = min(start, mem.align_backward_uintptr(uintptr(segment.vaddr), PAGE_SIZE))
 			end = max(end, mem.align_forward_uintptr(uintptr(segment.vaddr + segment.memsz), PAGE_SIZE))
@@ -558,7 +575,7 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		}
 		return {}, Load_Failed{kind = .Wrong_Load_Base, os_error = os.Platform_Error(map_err)}
 	}
-	for &segment in view.segments {
+	for segment in view.segments {
 		if segment.type == PT_LOAD && segment.filesz > 0 {
 			if int(segment.offset + segment.filesz) > len(data) || segment.filesz > segment.memsz {
 				linux.munmap(mapping, uint(end - start))
@@ -568,8 +585,8 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		}
 	}
 
-	page_protection :: proc(view: ^Elf_View, page: uintptr) -> (protection: linux.Mem_Protection) {
-		for &segment in view.segments {
+	page_protection :: proc(view: Elf_View, page: uintptr) -> (protection: linux.Mem_Protection) {
+		for segment in view.segments {
 			segment_start := uintptr(segment.vaddr)
 			segment_end := uintptr(segment.vaddr + segment.memsz)
 			if segment.type != PT_LOAD || segment_end <= page || segment_start >= page + PAGE_SIZE {
@@ -583,9 +600,9 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 	}
 
 	run_start := start
-	run_protection := page_protection(&view, start)
+	run_protection := page_protection(view, start)
 	for page := start + PAGE_SIZE; ; page += PAGE_SIZE {
-		protection := page_protection(&view, page) if page < end else {}
+		protection := page_protection(view, page) if page < end else {}
 		if page < end && protection == run_protection {
 			continue
 		}
@@ -599,7 +616,7 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 	if attached {
 		register_with_debugger(data)
 	}
-	return read_elf_symbols(&view, 0, context.temp_allocator, stable_keys = false).symbols, nil
+	return read_elf_symbols(view, 0, stable_keys = false, allocator = context.temp_allocator).symbols, nil
 }
 
 when LIVEPATCH {
