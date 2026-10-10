@@ -35,6 +35,9 @@ probe_target :: #force_no_inline proc "c" () -> i32 {
 	return 7
 }
 
+// The redirect probes call through this pointer, so the compiler cannot see the target
+probe_target_pointer := probe_target
+
 // Maps RW memory at the first free 1 MB step above the exe code, or returns nil
 map_near_exe :: proc(size: uintptr) -> rawptr {
 	anchor := uintptr(rawptr(probe_target)) &~ (PAGE_SIZE - 1)
