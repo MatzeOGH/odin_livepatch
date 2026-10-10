@@ -5,11 +5,11 @@ import "base:runtime"
 import "core:reflect"
 import "core:slice"
 
-diff_types :: proc(old_table, new_table: []^runtime.Type_Info, allocator := context.temp_allocator) -> []Type_Change {
-	old_by_name := named_types(old_table, allocator)
-	new_by_name := named_types(new_table, allocator)
+diff_types :: proc(old_table, new_table: []^runtime.Type_Info) -> []Type_Change {
+	old_by_name := named_types(old_table)
+	new_by_name := named_types(new_table)
+	changed := make([dynamic]Type_Change, context.temp_allocator)
 
-	changed := make([dynamic]Type_Change, 0, 0, allocator)
 	for new_type in new_table {
 		if new_type == nil {
 			continue
@@ -32,8 +32,8 @@ diff_types :: proc(old_table, new_table: []^runtime.Type_Info, allocator := cont
 	return changed[:]
 }
 
-named_types :: proc(table: []^runtime.Type_Info, allocator: runtime.Allocator) -> map[Type_Name][dynamic]^runtime.Type_Info {
-	by_name := make(map[Type_Name][dynamic]^runtime.Type_Info, len(table), allocator)
+named_types :: proc(table: []^runtime.Type_Info) -> map[Type_Name][dynamic]^runtime.Type_Info {
+	by_name := make(map[Type_Name][dynamic]^runtime.Type_Info, len(table), context.temp_allocator)
 	for type_info in table {
 		if type_info == nil {
 			continue
@@ -41,7 +41,7 @@ named_types :: proc(table: []^runtime.Type_Info, allocator: runtime.Allocator) -
 		named := type_info.variant.(runtime.Type_Info_Named) or_continue
 		name := Type_Name{named.pkg, named.name}
 		if name not_in by_name {
-			by_name[name] = make([dynamic]^runtime.Type_Info, allocator)
+			by_name[name] = make([dynamic]^runtime.Type_Info, context.temp_allocator)
 		}
 		append(&by_name[name], type_info)
 	}
@@ -212,8 +212,8 @@ types_equal :: proc(left, right: ^runtime.Type_Info) -> bool {
 		if left_variant.no_nil != right_variant.no_nil || left_variant.shared_nil != right_variant.shared_nil {
 			return false
 		}
-		for _, i in left_variant.variants {
-			if !types_equal(left_variant.variants[i], right_variant.variants[i]) {
+		for variant, i in left_variant.variants {
+			if !types_equal(variant, right_variant.variants[i]) {
 				return false
 			}
 		}
@@ -224,8 +224,8 @@ types_equal :: proc(left, right: ^runtime.Type_Info) -> bool {
 		if len(left_variant.names) != len(right_variant.names) {
 			return false
 		}
-		for _, i in left_variant.names {
-			if left_variant.names[i] != right_variant.names[i] || left_variant.values[i] != right_variant.values[i] {
+		for name, i in left_variant.names {
+			if name != right_variant.names[i] || left_variant.values[i] != right_variant.values[i] {
 				return false
 			}
 		}

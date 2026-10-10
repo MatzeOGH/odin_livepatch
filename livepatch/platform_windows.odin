@@ -73,7 +73,7 @@ exe_image_size :: proc "contextless" () -> uintptr {
 make_exe_writable :: proc() -> Error {
 	base := exe_base()
 	old_protect: win.DWORD
-	for &section in pe_sections(rawptr(base)) {
+	for section in pe_sections(rawptr(base)) {
 		if section.characteristics & .MEM_EXECUTE != {} {
 			if !win.VirtualProtect(rawptr(base + uintptr(section.virtual_address)), win.SIZE_T(section.virtual_size), win.PAGE_EXECUTE_READWRITE, &old_protect) {
 				return Commit_Failed{os_error = os.Platform_Error(win.GetLastError())}

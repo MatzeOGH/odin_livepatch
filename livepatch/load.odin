@@ -1,7 +1,9 @@
 #+build windows amd64, linux amd64
 package livepatch
 
+import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 
 remove_objects :: proc(dir: string) {
@@ -16,19 +18,19 @@ remove_objects :: proc(dir: string) {
 	}
 }
 
-read_all :: proc(dir: string, allocator := context.temp_allocator) -> (objs: []Loaded_Object, ok: bool) {
-	entries, dir_err := os.read_all_directory_by_path(dir, allocator)
+read_all :: proc(dir: string) -> (objs: []Loaded_Object, ok: bool) {
+	entries, dir_err := os.read_all_directory_by_path(dir, context.temp_allocator)
 	if dir_err != nil {
 		return
 	}
 
-	loaded := make([dynamic]Loaded_Object, allocator)
+	loaded := make([dynamic]Loaded_Object, context.temp_allocator)
 	for entry in entries {
 		if entry.type == .Directory || !strings.has_suffix(entry.name, OBJECT_EXT) {
 			continue
 		}
 		path := entry.fullpath
-		data, read_err := os.read_entire_file_from_path(path, allocator)
+		data, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 		if read_err != nil {
 			return
 		}

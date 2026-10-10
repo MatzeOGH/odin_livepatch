@@ -168,7 +168,7 @@ private_files_strip :: proc(files: Private_Files, name: string) -> string {
 	return strings.to_string(out)
 }
 
-static_keys_make :: proc(names: []string, allocator := context.temp_allocator) -> Static_Keys {
+static_keys_make :: proc(names: []string) -> Static_Keys {
 	locals := Local_Keys{make(map[string][dynamic]int, context.temp_allocator), make(map[string]string, context.temp_allocator)}
 	statics := make(map[string][dynamic]int, context.temp_allocator)
 	files := make(Private_Files, context.temp_allocator)
@@ -197,7 +197,7 @@ static_keys_make :: proc(names: []string, allocator := context.temp_allocator) -
 		}
 	}
 
-	keys := make(Static_Keys, allocator)
+	keys := make(Static_Keys, context.temp_allocator)
 	for name in names {
 		if !may_have_key(name) || name in keys {
 			continue
@@ -208,7 +208,7 @@ static_keys_make :: proc(names: []string, allocator := context.temp_allocator) -
 			key = fmt.tprintf("%s#%d/%d", local_name(&locals, group, &segments), rank_of(offsets, offset), len(offsets))
 		}
 		if key = private_files_strip(files, key); key != name {
-			keys[name] = strings.clone(key, allocator)
+			keys[name] = strings.clone(key, context.temp_allocator)
 		}
 	}
 	return keys

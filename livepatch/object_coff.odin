@@ -11,6 +11,7 @@ Loaded_Object :: struct {
 	path: string,
 	data: []byte,
 	view: Coff_View,
+	out:  []byte, // the rewritten object
 }
 
 parse_object :: proc(path: string, data: []byte) -> (object: Loaded_Object, ok: bool) {
@@ -18,10 +19,10 @@ parse_object :: proc(path: string, data: []byte) -> (object: Loaded_Object, ok: 
 	if view.section_count == 0 {
 		return
 	}
-	return Loaded_Object{path, data, view}, true
+	return Loaded_Object{path = path, data = data, view = view}, true
 }
 
-object_max_image_size :: proc(object: ^Loaded_Object) -> (size: int) {
+object_max_image_size :: proc(object: Loaded_Object) -> (size: int) {
 	for section_index in 0 ..< object.view.section_count {
 		section := coff_section_header(object.data, object.view.section_headers_offset, section_index)
 		if !is_discarded_section(section) {
@@ -32,8 +33,8 @@ object_max_image_size :: proc(object: ^Loaded_Object) -> (size: int) {
 }
 
 // Skips the auxiliary records.
-next_object_symbol :: proc(object: ^Loaded_Object, cursor: ^int) -> (symbol: Object_Symbol, ok: bool) {
-	view := &object.view
+next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Object_Symbol, ok: bool) {
+	view := object.view
 	coff_sym, symbol_index := next_coff_symbol(object.data, view.symtab_offset, view.symbol_count, cursor) or_return
 	symbol.name = coff_symbol_name(coff_sym, object.data, view.strtab_offset)
 	symbol.local = coff_sym.storage_class == .STATIC
@@ -81,7 +82,7 @@ find_near_references :: proc(objects: []Loaded_Object) -> Near_References {
 	return {}
 }
 
-needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
+needs_near_address :: proc(refs: Near_References, name: string) -> bool {
 	return true
 }
 
@@ -92,14 +93,11 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	string_table := make([dynamic]u8, context.temp_allocator)
 	append(&string_table, 0, 0, 0, 0) // the size, set below
 	symbols := make([dynamic]Coff_Symbol, 0, symbol_count, context.temp_allocator)
-	add_absolute_symbol :: proc(symbols: ^[dynamic]Coff_Symbol, string_table: ^[dynamic]u8, name: string, addr: rawptr) {
-		symbol: Coff_Symbol
+	add_absolute_symbol :: proc(symbols: ^[dynamic]Coff_Symbol, string_table: ^[dynamic]u8, name: string, addr: rawptr, section := i16le(pe.IMAGE_SYM_ABSOLUTE)) {
+		symbol := Coff_Symbol{value = u32le(uintptr(addr)), section_number = section, storage_class = .EXTERNAL}
 		(^u32le)(&symbol.name[4])^ = u32le(len(string_table))
 		append(string_table, name)
 		append(string_table, 0)
-		symbol.value = u32le(uintptr(addr))
-		symbol.section_number = pe.IMAGE_SYM_ABSOLUTE
-		symbol.storage_class = .EXTERNAL
 		append(symbols, symbol)
 	}
 	for name, alias in merged.aliases {
@@ -111,19 +109,11 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	for name, addr in merged.externals {
 		add_absolute_symbol(&symbols, &string_table, name, addr)
 	}
-	cells := make([]u64le, cell_count, context.temp_allocator)
-	cell_index := 0
+	// Each cell symbol is in section 1, at the offset of its cell
+	cells := make([dynamic]u64le, 0, cell_count, context.temp_allocator)
 	for name, addr in merged.debug_cells {
-		symbol: Coff_Symbol
-		(^u32le)(&symbol.name[4])^ = u32le(len(string_table))
-		append(&string_table, name)
-		append(&string_table, 0)
-		symbol.value = u32le(cell_index * 8)
-		symbol.section_number = 1
-		symbol.storage_class = .EXTERNAL
-		append(&symbols, symbol)
-		cells[cell_index] = u64le(uintptr(addr))
-		cell_index += 1
+		add_absolute_symbol(&symbols, &string_table, name, rawptr(uintptr(len(cells) * 8)), section = 1)
+		append(&cells, u64le(uintptr(addr)))
 	}
 	(^u32le)(raw_data(string_table[:]))^ = u32le(len(string_table))
 
@@ -142,7 +132,7 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 		section.size_of_raw_data = u32le(cell_count * 8)
 		section.pointer_to_raw_data = u32le(cells_offset)
 		section.characteristics = .CNT_INITIALIZED_DATA | .MEM_READ | .ALIGN_8BYTES
-		copy(out[cells_offset:], slice.to_bytes(cells))
+		copy(out[cells_offset:], slice.to_bytes(cells[:]))
 	}
 	copy(out[symtab_offset:], slice.to_bytes(symbols[:]))
 	copy(out[symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE:], string_table[:])

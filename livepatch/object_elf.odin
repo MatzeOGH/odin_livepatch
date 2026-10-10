@@ -13,6 +13,7 @@ Loaded_Object :: struct {
 	path: string,
 	data: []byte,
 	view: Elf_View,
+	out:  []byte, // the rewritten object
 }
 
 parse_object :: proc(path: string, data: []byte) -> (object: Loaded_Object, ok: bool) {
@@ -20,11 +21,11 @@ parse_object :: proc(path: string, data: []byte) -> (object: Loaded_Object, ok: 
 	if view.header.type != ET_REL || view.symtab == 0 {
 		return
 	}
-	return Loaded_Object{path, data, view}, true
+	return Loaded_Object{path = path, data = data, view = view}, true
 }
 
-object_max_image_size :: proc(object: ^Loaded_Object) -> (size: int) {
-	for &section in object.view.sections {
+object_max_image_size :: proc(object: Loaded_Object) -> (size: int) {
+	for section in object.view.sections {
 		if section.flags & SHF_ALLOC != 0 {
 			size += int(section.size) + max(int(section.addralign), 1)
 		}
@@ -32,15 +33,15 @@ object_max_image_size :: proc(object: ^Loaded_Object) -> (size: int) {
 	return
 }
 
-next_object_symbol :: proc(object: ^Loaded_Object, cursor: ^int) -> (symbol: Object_Symbol, ok: bool) {
+next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Object_Symbol, ok: bool) {
 	cursor^ = max(cursor^, 1) // symbol 0 is the null symbol
 	if cursor^ >= len(object.view.syms) {
 		return
 	}
-	elf_sym := &object.view.syms[cursor^]
+	elf_sym := object.view.syms[cursor^]
 	cursor^ += 1
 
-	symbol.name = elf_symbol_name(&object.view, elf_sym)
+	symbol.name = elf_symbol_name(object.view, elf_sym)
 	symbol.local = elf_sym.info.binding == STB_LOCAL
 	symbol.size = int(elf_sym.size)
 	sym_type := elf_sym.info.type
@@ -54,13 +55,13 @@ next_object_symbol :: proc(object: ^Loaded_Object, cursor: ^int) -> (symbol: Obj
 		}
 		return symbol, true
 	}
-	section_index, defined := elf_symbol_section_index(&object.view, elf_sym)
+	section_index, defined := elf_symbol_section_index(object.view, elf_sym)
 	if !defined {
 		return symbol, true
 	}
 	symbol.provides = !symbol.local
 
-	section := &object.view.sections[section_index]
+	section := object.view.sections[section_index]
 	switch {
 	case section.flags & SHF_ALLOC == 0,
 	     section.flags & SHF_TLS != 0,
@@ -69,7 +70,7 @@ next_object_symbol :: proc(object: ^Loaded_Object, cursor: ^int) -> (symbol: Obj
 		symbol.kind = .Skipped
 	case section.flags & SHF_EXECINSTR != 0:
 		symbol.kind = .Code
-	case section_holds_variables(&object.view, section):
+	case section_holds_variables(object.view, section):
 		symbol.kind = .Data
 	case:
 		symbol.kind = .Read_Only
@@ -77,7 +78,7 @@ next_object_symbol :: proc(object: ^Loaded_Object, cursor: ^int) -> (symbol: Obj
 	return symbol, true
 }
 
-section_holds_variables :: proc(view: ^Elf_View, section: ^Elf64_Shdr) -> bool {
+section_holds_variables :: proc(view: Elf_View, section: Elf64_Shdr) -> bool {
 	if section.flags & SHF_WRITE == 0 || section.flags & SHF_EXECINSTR != 0 {
 		return false
 	}
@@ -91,23 +92,23 @@ startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) ->
 		return ""
 	}
 	for &object in objects {
-		view := &object.view
-		for &sym in view.syms {
-			if !is_global_init_proc(elf_symbol_name(view, &sym)) {
+		view := object.view
+		for sym in view.syms {
+			if !is_global_init_proc(elf_symbol_name(view, sym)) {
 				continue
 			}
-			section_index := elf_symbol_section_index(view, &sym) or_continue
-			for &rela_section in view.sections {
+			section_index := elf_symbol_section_index(view, sym) or_continue
+			for rela_section in view.sections {
 				if rela_section.type != SHT_RELA || int(rela_section.info) != section_index || int(rela_section.link) != view.symtab {
 					continue
 				}
-				relas := elf_section_relas(object.data, &rela_section) or_continue
-				for &rela in relas {
+				relas := elf_section_relas(object.data, rela_section) or_continue
+				for rela in relas {
 					symbol_index := int(rela.info.symbol)
 					if rela.offset < sym.value || rela.offset >= sym.value + sym.size || symbol_index >= len(view.syms) {
 						continue
 					}
-					if name := elf_symbol_name(view, &view.syms[symbol_index]); name in merged.new_globals {
+					if name := elf_symbol_name(view, view.syms[symbol_index]); name in merged.new_globals {
 						return name
 					}
 				}
@@ -124,19 +125,19 @@ Near_References :: struct {
 find_near_references :: proc(objects: []Loaded_Object) -> (refs: Near_References) {
 	refs.names = make(map[string]bool, context.temp_allocator)
 	for &object in objects {
-		view := &object.view
-		for &rela_section in view.sections {
+		view := object.view
+		for rela_section in view.sections {
 			if rela_section.type != SHT_RELA || int(rela_section.link) != view.symtab {
 				continue
 			}
-			relas := elf_section_relas(object.data, &rela_section) or_continue
-			for &rela in relas {
+			relas := elf_section_relas(object.data, rela_section) or_continue
+			for rela in relas {
 				if !is_rel32_reference(rela.info.type) {
 					continue
 				}
 				symbol_index := int(rela.info.symbol)
 				if symbol_index < len(view.syms) && view.syms[symbol_index].shndx == SHN_UNDEF {
-					refs.names[elf_symbol_name(view, &view.syms[symbol_index])] = true
+					refs.names[elf_symbol_name(view, view.syms[symbol_index])] = true
 				}
 			}
 		}
@@ -144,7 +145,7 @@ find_near_references :: proc(objects: []Loaded_Object) -> (refs: Near_References
 	return
 }
 
-needs_near_address :: proc(refs: ^Near_References, name: string) -> bool {
+needs_near_address :: proc(refs: Near_References, name: string) -> bool {
 	return name in refs.names
 }
 
@@ -163,29 +164,29 @@ Relocation_Class :: enum {
 	Other,
 }
 
-retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allocator := context.temp_allocator) -> (out: []byte, failed: string) {
+retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (out: []byte, failed: string) {
 	data := object.data
-	view := &object.view
+	view := object.view
 	rewrite := Elf_Rewrite{
 		object             = object,
 		merged             = merged,
-		added_syms         = make([dynamic]Elf64_Sym, allocator),
-		added_strings      = make([dynamic]u8, allocator),
-		alias_index        = make(map[string]u32, allocator),
-		symbols_by_section = make([][dynamic]int, len(view.sections), allocator),
+		added_syms         = make([dynamic]Elf64_Sym, context.temp_allocator),
+		added_strings      = make([dynamic]u8, context.temp_allocator),
+		alias_index        = make(map[string]u32, context.temp_allocator),
+		symbols_by_section = make([][dynamic]int, len(view.sections), context.temp_allocator),
 	}
 	for &list in rewrite.symbols_by_section {
-		list = make([dynamic]int, allocator)
+		list = make([dynamic]int, context.temp_allocator)
 	}
 	for &sym, symbol_index in view.syms {
-		section_index := elf_symbol_section_index(view, &sym) or_continue
+		section_index := elf_symbol_section_index(view, sym) or_continue
 		sym_type := sym.info.type
 		if sym_type != STT_SECTION && sym_type != STT_FILE && sym.name != 0 {
 			append(&rewrite.symbols_by_section[section_index], symbol_index)
 		}
 	}
 
-	for &rela_section in view.sections {
+	for rela_section in view.sections {
 		if rela_section.type != SHT_RELA {
 			continue
 		}
@@ -193,9 +194,9 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 		if int(rela_section.link) != view.symtab || patched_index <= 0 || patched_index >= len(view.sections) {
 			continue
 		}
-		patched_section := &view.sections[patched_index]
+		patched_section := view.sections[patched_index]
 		section_bytes := elf_section_bytes(data, patched_section) or_continue
-		relas, relas_ok := elf_section_relas(data, &rela_section)
+		relas, relas_ok := elf_section_relas(data, rela_section)
 		if !relas_ok {
 			return nil, "<relocation table>"
 		}
@@ -215,7 +216,7 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 				}
 			case .Thread_Local:
 				if allocated && !rewrite_tls_to_local_exec(&rewrite, section_bytes, relas, rela_index) {
-					name := elf_symbol_name(view, &view.syms[symbol_index])
+					name := elf_symbol_name(view, view.syms[symbol_index])
 					return nil, name if name != "" else "<thread-local>"
 				}
 			case .Other:
@@ -238,7 +239,7 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 	symbol_count := len(view.syms) + len(rewrite.added_syms)
 	symtab_offset := mem.align_forward_int(len(data), 8)
 	strtab_offset := symtab_offset + symbol_count * size_of(Elf64_Sym)
-	out = make([]byte, strtab_offset + len(view.strtab) + len(rewrite.added_strings), allocator)
+	out = make([]byte, strtab_offset + len(view.strtab) + len(rewrite.added_strings), context.temp_allocator)
 	copy(out, data)
 	copy(out[symtab_offset:], slice.to_bytes(view.syms))
 	copy(out[symtab_offset + len(view.syms) * size_of(Elf64_Sym):], slice.to_bytes(rewrite.added_syms[:]))
@@ -254,8 +255,8 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged, allo
 }
 
 binding_key :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, target_offset: i64) -> (key: string, ok: bool) {
-	view := &rewrite.object.view
-	sym := &view.syms[symbol_index]
+	view := rewrite.object.view
+	sym := view.syms[symbol_index]
 	if sym.info.type != STT_SECTION {
 		name := elf_symbol_name(view, sym)
 		if name != "" && name in rewrite.merged.defs {
@@ -265,12 +266,12 @@ binding_key :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, target_offset: i64
 	}
 
 	section_index := elf_symbol_section_index(view, sym) or_return
-	section := &view.sections[section_index]
+	section := view.sections[section_index]
 	if section.flags & (SHF_ALLOC | SHF_TLS) != SHF_ALLOC || !section_holds_variables(view, section) {
 		return
 	}
 	holder_index := symbol_covering_offset(rewrite, section_index, target_offset) or_return
-	holder_name := elf_symbol_name(view, &view.syms[holder_index])
+	holder_name := elf_symbol_name(view, view.syms[holder_index])
 	live_address := rewrite.merged.defs[holder_name] or_return
 	holder_value := view.syms[holder_index].value
 	key = fmt.tprintf("%s\x00%x", holder_name, holder_value)
@@ -309,14 +310,14 @@ alias_symbol_index :: proc(rewrite: ^Elf_Rewrite, alias: string) -> u32 {
 }
 
 thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_in_symbol: i64) -> (offset: i32, ok: bool) {
-	view := &rewrite.object.view
-	sym := &view.syms[symbol_index]
+	view := rewrite.object.view
+	sym := view.syms[symbol_index]
 	offset_in_symbol := offset_in_symbol
 	if sym.info.type == STT_SECTION {
 		section_index := elf_symbol_section_index(view, sym) or_return
 		holder_index := symbol_covering_offset(rewrite, section_index, offset_in_symbol) or_return
 		offset_in_symbol -= i64(view.syms[holder_index].value)
-		sym = &view.syms[holder_index]
+		sym = view.syms[holder_index]
 	}
 	symbol_offset := exe_tls_offset(elf_symbol_name(view, sym), rewrite.merged.keys) or_return
 	total := symbol_offset + offset_in_symbol
@@ -375,7 +376,7 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 }
 
 // Empties the name of the thread-local at `site`, so the debugger uses the exe's (gdb and lldb do not read fs.base).
-hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, relas: []Elf64_Rela, site: int) -> bool {
+hide_debug_thread_local :: proc(view: Elf_View, data: []byte, info: []byte, relas: []Elf64_Rela, site: int) -> bool {
 	DW_AT_NAME :: 0x03
 	DW_AT_LOCATION :: 0x02
 	DW_AT_STR_OFFSETS_BASE :: 0x72
@@ -389,10 +390,10 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 	str_offset_relas: []Elf64_Rela
 	debug_str_index := -1
 	for &section, section_index in view.sections {
-		switch elf_section_name(view, &section) {
-		case ".debug_abbrev":           abbrev = elf_section_bytes(data, &section) or_return
-		case ".debug_str":              debug_str, debug_str_index = elf_section_bytes(data, &section) or_return, section_index
-		case ".rela.debug_str_offsets": str_offset_relas = elf_section_relas(data, &section) or_return
+		switch elf_section_name(view, section) {
+		case ".debug_abbrev":           abbrev = elf_section_bytes(data, section) or_return
+		case ".debug_str":              debug_str, debug_str_index = elf_section_bytes(data, section) or_return, section_index
+		case ".rela.debug_str_offsets": str_offset_relas = elf_section_relas(data, section) or_return
 		}
 	}
 
@@ -518,11 +519,11 @@ hide_debug_thread_local :: proc(view: ^Elf_View, data: []byte, info: []byte, rel
 				// Each reference to the name, also from the .debug_names index, gets the NUL at its end
 				name_offset := name_rela.addend
 				name_length := i64(len(strings.truncate_to_byte(string(debug_str[name_offset:]), 0)))
-				for &section in view.sections {
-					if section.type != SHT_RELA || !strings.has_prefix(elf_section_name(view, &section), ".rela.debug") {
+				for section in view.sections {
+					if section.type != SHT_RELA || !strings.has_prefix(elf_section_name(view, section), ".rela.debug") {
 						continue
 					}
-					for &rela in elf_section_relas(data, &section) or_continue {
+					for &rela in elf_section_relas(data, section) or_continue {
 						sym := &view.syms[rela.info.symbol]
 						if rela.addend == name_offset && sym.info.type == STT_SECTION && sym.shndx == u16(debug_str_index) {
 							rela.addend += name_length
