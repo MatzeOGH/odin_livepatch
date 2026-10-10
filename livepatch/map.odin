@@ -9,14 +9,14 @@ import "core:strings"
 
 load_exe_symbols :: proc(exe_path: string) {
 	map_path := strings.concatenate({strings.trim_suffix(exe_path, filepath.ext(exe_path)), ".map"}, context.temp_allocator)
-	symbols, starts := read_msvc_map(map_path, exe_base(), context.allocator)
+	symbols, starts := read_msvc_map(map_path, exe_base())
 	slice.sort(starts[:])
 	exe_map, exe_starts = symbols, starts[:]
 	load_exe_sections()
 }
 
 // `starts` is the live address of every symbol
-read_msvc_map :: proc(map_path: string, base: uintptr, allocator := context.allocator, stable_keys := true) -> (index: map[string]uintptr, starts: [dynamic]uintptr) {
+read_msvc_map :: proc(map_path: string, base: uintptr, stable_keys := true, allocator := context.allocator) -> (index: map[string]uintptr, starts: [dynamic]uintptr) {
 	index = make(map[string]uintptr, allocator)
 	starts = make([dynamic]uintptr, allocator)
 	data, read_err := os.read_entire_file_from_path(map_path, context.temp_allocator)

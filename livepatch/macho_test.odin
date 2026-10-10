@@ -32,14 +32,14 @@ test_macho_exe :: proc(t: ^testing.T) {
 	if !ok {
 		return
 	}
-	log_view(&view)
+	log_view(view)
 	testing.expect_value(t, view.header.magic, MH_MAGIC_64)
 	testing.expect_value(t, view.header.filetype, MH_EXECUTE)
 	testing.expect_value(t, view.header.cputype, CPU_TYPE_ARM64)
 	testing.expect(t, view.symtab != nil, "the exe has LC_SYMTAB")
 	testing.expect(t, view.dysymtab != nil, "the exe has LC_DYSYMTAB")
 	testing.expect(t, len(view.syms) > 0, "the exe has a symbol table")
-	testing.expect(t, len(view.segments) == int(count_commands(data, &view, LC_SEGMENT_64)), "each LC_SEGMENT_64 is in segments")
+	testing.expect(t, len(view.segments) == int(count_commands(data, view, LC_SEGMENT_64)), "each LC_SEGMENT_64 is in segments")
 
 	has_page_zero, has_text := false, false
 	for segment in view.segments {
@@ -60,18 +60,18 @@ test_macho_exe :: proc(t: ^testing.T) {
 	testing.expect(t, has_text, "the exe has __TEXT,__text")
 
 	probe_value: uintptr
-	for &sym in view.syms {
-		if macho_symbol_section(&view, &sym) != nil && macho_raw_name(&view, &sym) == "_livepatch::test_probe" {
+	for sym in view.syms {
+		if macho_symbol_section(view, sym) != nil && macho_raw_name(view, sym) == "_livepatch::test_probe" {
 			probe_value = uintptr(sym.n_value)
-			testing.expect_value(t, macho_symbol_name(&view, &sym), "livepatch::test_probe")
-			testing.expect(t, !macho_is_temporary(macho_raw_name(&view, &sym)), "a name with _ is not a temporary")
+			testing.expect_value(t, macho_symbol_name(view, sym), "livepatch::test_probe")
+			testing.expect(t, !macho_is_temporary(macho_raw_name(view, sym)), "a name with _ is not a temporary")
 		}
 	}
 	testing.expect(t, probe_value != 0, "the exe has the symbol _livepatch::test_probe")
 	slide := uintptr(&test_probe) - probe_value
 	log.infof("slide: 0x%x (live &test_probe 0x%x - n_value 0x%x)", slide, uintptr(&test_probe), probe_value)
 
-	symbols := read_macho_symbols(&view, slide, context.temp_allocator)
+	symbols := read_macho_symbols(view, slide, allocator = context.temp_allocator)
 	log.infof("read_macho_symbols: %d keys, %d starts", len(symbols.symbols), len(symbols.starts))
 	for key, addr in symbols.symbols {
 		if strings.has_prefix(key, "livepatch::") {
@@ -122,12 +122,12 @@ test_macho_exe :: proc(t: ^testing.T) {
 	// Only compiler helpers have internal linkage under -use-separate-modules, so only they repeat
 	addresses := make(map[string]uintptr, context.temp_allocator)
 	ambiguous := make(map[string]int, context.temp_allocator)
-	for &sym in view.syms {
-		raw := macho_raw_name(&view, &sym)
-		if macho_symbol_section(&view, &sym) == nil || macho_is_temporary(raw) {
+	for sym in view.syms {
+		raw := macho_raw_name(view, sym)
+		if macho_symbol_section(view, sym) == nil || macho_is_temporary(raw) {
 			continue
 		}
-		name := macho_symbol_name(&view, &sym)
+		name := macho_symbol_name(view, sym)
 		if addr, found := addresses[name]; found && addr != uintptr(sym.n_value) {
 			ambiguous[name] += 1
 		}
@@ -184,7 +184,7 @@ test_macho_rejects :: proc(t: ^testing.T) {
 	testing.expect(t, empty_ok, "accepts a header with no load commands")
 }
 
-log_view :: proc(view: ^Macho_View) {
+log_view :: proc(view: Macho_View) {
 	header := view.header
 	log.infof("header: magic=0x%x cputype=0x%x filetype=%d ncmds=%d sizeofcmds=%d flags=0x%x",
 		header.magic, header.cputype, header.filetype, header.ncmds, header.sizeofcmds, header.flags)
@@ -211,16 +211,16 @@ log_view :: proc(view: ^Macho_View) {
 			build.minos >> 16, (build.minos >> 8) & 0xFF, build.minos & 0xFF, build.sdk >> 16, (build.sdk >> 8) & 0xFF, build.sdk & 0xFF)
 	}
 	MAX_LOGGED :: 40
-	for &sym, index in view.syms {
+	for sym, index in view.syms {
 		if index == MAX_LOGGED {
 			log.debugf("  ... %d more symbols", len(view.syms) - MAX_LOGGED)
 			break
 		}
-		log.debugf("  nlist %4d %-50s type=0x%02x sect=%d desc=0x%x value=0x%x", index, macho_raw_name(view, &sym), sym.n_type, sym.n_sect, sym.n_desc, sym.n_value)
+		log.debugf("  nlist %4d %-50s type=0x%02x sect=%d desc=0x%x value=0x%x", index, macho_raw_name(view, sym), sym.n_type, sym.n_sect, sym.n_desc, sym.n_value)
 	}
 }
 
-count_commands :: proc(data: []byte, view: ^Macho_View, cmd: u32) -> (count: u32) {
+count_commands :: proc(data: []byte, view: Macho_View, cmd: u32) -> (count: u32) {
 	offset := size_of(Mach_Header_64)
 	for _ in 0 ..< view.header.ncmds {
 		command := (^Load_Command)(raw_data(data[offset:]))

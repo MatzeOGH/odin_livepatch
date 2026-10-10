@@ -29,30 +29,30 @@ Merged :: struct {
 	debug_cells:    map[string]rawptr, // `lp$r<name>` -> live address of kept data, for the debug info (Windows)
 }
 
-merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_allocator) -> (merged: Merged) {
-	merged.defs = make(map[string]rawptr, allocator)
-	merged.defined = make(map[string]bool, allocator)
-	merged.externals = make(map[string]rawptr, allocator)
-	merged.aliases = make(map[string]string, allocator)
-	merged.call_aliases = make(map[string]string, allocator)
-	merged.redirects = make([dynamic]Redirect, allocator)
-	merged.slot_targets = make([dynamic]Redirect, allocator)
-	merged.new_globals = make(map[string]int, allocator)
-	merged.debug_cells = make(map[string]rawptr, allocator)
-	seen :=make(map[string]bool, allocator)
+merge_symbols :: proc(objects: []Loaded_Object) -> (merged: Merged) {
+	merged.defs = make(map[string]rawptr, context.temp_allocator)
+	merged.defined = make(map[string]bool, context.temp_allocator)
+	merged.externals = make(map[string]rawptr, context.temp_allocator)
+	merged.aliases = make(map[string]string, context.temp_allocator)
+	merged.call_aliases = make(map[string]string, context.temp_allocator)
+	merged.redirects = make([dynamic]Redirect, context.temp_allocator)
+	merged.slot_targets = make([dynamic]Redirect, context.temp_allocator)
+	merged.new_globals = make(map[string]int, context.temp_allocator)
+	merged.debug_cells = make(map[string]rawptr, context.temp_allocator)
+	seen := make(map[string]bool, context.temp_allocator)
 
 	names := make([dynamic]string, context.temp_allocator)
-	for &object in objects {
+	for object in objects {
 		cursor := 0
-		for symbol in next_object_symbol(&object, &cursor) {
+		for symbol in next_object_symbol(object, &cursor) {
 			append(&names, symbol.name)
 		}
 	}
-	merged.keys = static_keys_make(names[:], allocator)
+	merged.keys = static_keys_make(names[:])
 
-	for &object in objects {
+	for object in objects {
 		cursor := 0
-		for symbol in next_object_symbol(&object, &cursor) {
+		for symbol in next_object_symbol(object, &cursor) {
 			name := symbol.name
 			if symbol.provides {
 				merged.defined[name] = true
@@ -121,9 +121,9 @@ merge_symbols :: proc(objects: []Loaded_Object, allocator := context.temp_alloca
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	near_refs: Near_References
 	have_near_refs := false
-	for &object in objects {
+	for object in objects {
 		cursor := 0
-		for symbol in next_object_symbol(&object, &cursor) {
+		for symbol in next_object_symbol(object, &cursor) {
 			if symbol.kind != .Undefined {
 				continue
 			}
@@ -142,7 +142,7 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 				if !have_near_refs {
 					near_refs, have_near_refs = find_near_references(objects), true
 				}
-				if needs_near_address(&near_refs, name) {
+				if needs_near_address(near_refs, name) {
 					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
 					if slot == nil {
 						return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}

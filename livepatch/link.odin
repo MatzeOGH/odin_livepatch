@@ -30,12 +30,12 @@ link_and_load :: proc(output_dir: string, objects: []Loaded_Object, merged: ^Mer
 	}
 
 	size := 1 << 20
-	for &object in objects {
-		size += object_max_image_size(&object)
+	for object in objects {
+		size += object_max_image_size(object)
 	}
 
 	// reserv space near exe
-	reserve := alloc_near(size, commit = false)
+	reserve := alloc_module(size)
 	if reserve == nil {
 		return {}, Load_Failed{kind = .No_Near_Memory, os_error = last_alloc_error()}
 	}

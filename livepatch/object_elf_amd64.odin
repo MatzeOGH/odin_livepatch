@@ -69,7 +69,7 @@ rip_operand_immediate_size :: proc(code: []byte, site: int) -> int {
 // Rewrites the thread-local access at relas[rela_index] to local-exec
 rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []Elf64_Rela, rela_index: int) -> (ok: bool) {
 	rela := &relas[rela_index]
-	view := &rewrite.object.view
+	view := rewrite.object.view
 	rela_type := rela.info.type
 	symbol_index := int(rela.info.symbol)
 	site := int(rela.offset)

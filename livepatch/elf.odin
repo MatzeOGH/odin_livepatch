@@ -165,23 +165,23 @@ parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 		}
 		view.segments = slice.reinterpret([]Elf64_Phdr, data[program_headers_offset:][:int(header.phnum) * size_of(Elf64_Phdr)])
 	}
-	view.shstrtab = elf_section_bytes(data, &view.sections[header.shstrndx]) or_return
+	view.shstrtab = elf_section_bytes(data, view.sections[header.shstrndx]) or_return
 	for &section, section_index in view.sections {
 		if section.type == SHT_SYMTAB {
 			if int(section.link) >= len(view.sections) || section.entsize != size_of(Elf64_Sym) {
 				return
 			}
-			symtab_bytes := elf_section_bytes(data, &section) or_return
+			symtab_bytes := elf_section_bytes(data, section) or_return
 			view.symtab = section_index
 			view.syms = slice.reinterpret([]Elf64_Sym, symtab_bytes)
-			view.strtab = elf_section_bytes(data, &view.sections[section.link]) or_return
+			view.strtab = elf_section_bytes(data, view.sections[section.link]) or_return
 			break
 		}
 	}
 	return view, true
 }
 
-elf_section_bytes :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> (bytes: []byte, ok: bool) {
+elf_section_bytes :: proc "contextless" (data: []byte, section: Elf64_Shdr) -> (bytes: []byte, ok: bool) {
 	if section.type == SHT_NOBITS {
 		return {}, true
 	}
@@ -193,7 +193,7 @@ elf_section_bytes :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> 
 }
 
 // The relocations of an SHT_RELA section
-elf_section_relas :: proc "contextless" (data: []byte, section: ^Elf64_Shdr) -> (relas: []Elf64_Rela, ok: bool) {
+elf_section_relas :: proc "contextless" (data: []byte, section: Elf64_Shdr) -> (relas: []Elf64_Rela, ok: bool) {
 	bytes := elf_section_bytes(data, section) or_return
 	if len(bytes) % size_of(Elf64_Rela) != 0 {
 		return
@@ -208,16 +208,16 @@ elf_string_at :: proc "contextless" (table: []u8, offset: u32) -> string {
 	return strings.truncate_to_byte(string(table[offset:]), 0)
 }
 
-elf_section_name :: proc "contextless" (view: ^Elf_View, section: ^Elf64_Shdr) -> string {
+elf_section_name :: proc "contextless" (view: Elf_View, section: Elf64_Shdr) -> string {
 	return elf_string_at(view.shstrtab, section.name)
 }
 
-elf_symbol_name :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> string {
+elf_symbol_name :: proc "contextless" (view: Elf_View, sym: Elf64_Sym) -> string {
 	return elf_string_at(view.strtab, sym.name)
 }
 
 // The index of the section that defines sym. Not ok for undefined, absolute and common symbols
-elf_symbol_section_index :: proc "contextless" (view: ^Elf_View, sym: ^Elf64_Sym) -> (section_index: int, ok: bool) {
+elf_symbol_section_index :: proc "contextless" (view: Elf_View, sym: Elf64_Sym) -> (section_index: int, ok: bool) {
 	if sym.shndx == SHN_UNDEF || sym.shndx >= 0xFF00 || int(sym.shndx) >= len(view.sections) {
 		return
 	}
@@ -232,7 +232,7 @@ Elf_Symbols :: struct {
 
 // With `stable_keys`, statics are indexed by data_key, for lookups from a later build; without,
 // by their full link name, for lookups from the same build.
-read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.allocator, stable_keys := true) -> (out: Elf_Symbols) {
+read_elf_symbols :: proc(view: Elf_View, bias: uintptr, stable_keys := true, allocator := context.allocator) -> (out: Elf_Symbols) {
 	out.symbols = make(map[string]uintptr, allocator)
 	out.starts = make([dynamic]uintptr, allocator)
 	out.tls = make(map[string]uintptr, allocator)
@@ -240,15 +240,15 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 	keys: Static_Keys
 	if stable_keys {
 		names := make([dynamic]string, context.temp_allocator)
-		for &sym in view.syms {
-			append(&names, elf_symbol_name(view, &sym))
+		for sym in view.syms {
+			append(&names, elf_symbol_name(view, sym))
 		}
 		keys = static_keys_make(names[:])
 	}
 
 	ambiguous := make(map[string]bool, context.temp_allocator)
-	for &sym in view.syms {
-		section_index := elf_symbol_section_index(view, &sym) or_continue
+	for sym in view.syms {
+		section_index := elf_symbol_section_index(view, sym) or_continue
 		if view.sections[section_index].flags & SHF_ALLOC == 0 {
 			// Not in memory
 			continue
@@ -257,7 +257,7 @@ read_elf_symbols :: proc(view: ^Elf_View, bias: uintptr, allocator := context.al
 		if sym_type == STT_SECTION || sym_type == STT_FILE {
 			continue
 		}
-		name := elf_symbol_name(view, &sym)
+		name := elf_symbol_name(view, sym)
 		if name == "" {
 			continue
 		}

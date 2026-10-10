@@ -11,12 +11,12 @@ build_command :: proc(script, output_dir: string) -> []string {
 	return slice.clone(command, context.temp_allocator)
 }
 
-build_output_dir :: proc(allocator := context.temp_allocator) -> (dir: string, err: Error) {
-	exe_dir, exe_err := os.get_executable_directory(allocator)
+build_output_dir :: proc() -> (dir: string, err: Error) {
+	exe_dir, exe_err := os.get_executable_directory(context.temp_allocator)
 	if exe_err != nil {
 		return "", Build_Failed{kind = .Exe_Path_Unknown}
 	}
-	joined, join_err := filepath.join({exe_dir, PATCH_OUTPUT_DIRNAME}, allocator)
+	joined, join_err := filepath.join({exe_dir, PATCH_OUTPUT_DIRNAME}, context.temp_allocator)
 	if join_err != nil {
 		return "", Build_Failed{kind = .Out_Of_Memory}
 	}
