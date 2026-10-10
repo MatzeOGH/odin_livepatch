@@ -70,7 +70,7 @@ next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Obje
 	case section.characteristics & .MEM_WRITE != {}:
 		symbol.kind = .Data
 	case:
-		symbol.kind = .Read_Only
+		symbol.kind = .Skipped
 	}
 	return symbol, true
 }

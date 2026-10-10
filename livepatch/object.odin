@@ -4,11 +4,10 @@ package livepatch
 import "core:strings"
 
 Symbol_Kind :: enum {
-	Skipped,   // not bound: absolute, debug, object-local, discarded, or thread-local
+	Skipped,   // not bound: absolute, debug, object-local, discarded, thread-local, or read-only
 	Undefined, // a reference that this object does not define
 	Code,
 	Data,      // writable data
-	Read_Only, // other defined data
 }
 
 Object_Symbol :: struct {

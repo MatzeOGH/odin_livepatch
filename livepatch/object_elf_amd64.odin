@@ -15,61 +15,9 @@ is_rel32_reference :: proc "contextless" (rela_type: u32) -> bool {
 	return rela_type == R_X86_64_PLT32 || rela_type == R_X86_64_PC32
 }
 
-reference_target_offset :: proc(rela_type: u32, addend: i64, code: []byte, site: int) -> i64 {
-	switch rela_type {
-	case R_X86_64_PC32, R_X86_64_PLT32, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX:
-		return addend + 4 + i64(rip_operand_immediate_size(code, site))
-	}
-	return addend
-}
-
-// The bytes between a RIP-relative displacement at `site` and the end of its instruction
-rip_operand_immediate_size :: proc(code: []byte, site: int) -> int {
-	if site < 2 || site > len(code) {
-		return 0
-	}
-	modrm := code[site - 1]
-	if modrm & 0xC7 != 0x05 {
-		return 0 // not a [rip+disp32] operand
-	}
-	opcode := code[site - 2]
-	if site >= 4 && code[site - 4] == 0x0F && code[site - 3] == 0x3A {
-		return 1 // 0F 3A: every opcode takes an imm8
-	}
-	if site >= 3 && code[site - 3] == 0x0F {
-		switch opcode {
-		case 0x70 ..= 0x73, 0xA4, 0xAC, 0xBA, 0xC2, 0xC4 ..= 0xC6:
-			return 1
-		}
-		return 0
-	}
-	// A 0x66 prefix, possibly before a REX prefix, makes a 32-bit immediate 16-bit.
-	prefix_pos := site - 3
-	if prefix_pos >= 0 && code[prefix_pos] >= 0x40 && code[prefix_pos] <= 0x4F {
-		prefix_pos -= 1
-	}
-	imm32_size := 4
-	if prefix_pos >= 0 && code[prefix_pos] == 0x66 {
-		imm32_size = 2
-	}
-	modrm_reg := (modrm >> 3) & 7
-	switch opcode {
-	case 0x80, 0x82, 0x83, 0xC0, 0xC1, 0xC6, 0x6B:
-		return 1
-	case 0x81, 0xC7, 0x69:
-		return imm32_size
-	case 0xF6:
-		return modrm_reg <= 1 ? 1 : 0 // test
-	case 0xF7:
-		return modrm_reg <= 1 ? imm32_size : 0 // test
-	}
-	return 0
-}
-
 // Rewrites the thread-local access at relas[rela_index] to local-exec
 rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []Elf64_Rela, rela_index: int) -> (ok: bool) {
 	rela := &relas[rela_index]
-	view := rewrite.object.view
 	rela_type := rela.info.type
 	symbol_index := int(rela.info.symbol)
 	site := int(rela.offset)
@@ -84,7 +32,6 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		}
 		return false
 	}
-	is_section := view.syms[symbol_index].info.type == STT_SECTION
 
 	switch rela_type {
 	case R_X86_64_GOTTPOFF:
@@ -92,7 +39,7 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		if site < 3 || site + 4 > len(code) {
 			return
 		}
-		tp_offset := thread_pointer_offset(rewrite, symbol_index, is_section ? rela.addend + 4 : 0) or_return
+		tp_offset := thread_pointer_offset(rewrite, symbol_index, 0) or_return
 		rex, opcode, modrm := &code[site - 3], &code[site - 2], &code[site - 1]
 		if (rex^ != 0x48 && rex^ != 0x4C) || modrm^ & 0xC7 != 0x05 {
 			return
@@ -118,7 +65,7 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		if call := string(code[site + 4:site + 8]); call != "\x66\x66\x48\xe8" && call != "\x66\x48\xff\x15" {
 			return
 		}
-		tp_offset := thread_pointer_offset(rewrite, symbol_index, is_section ? rela.addend + 4 : 0) or_return
+		tp_offset := thread_pointer_offset(rewrite, symbol_index, 0) or_return
 		drop_tls_get_addr_call(relas, rela_index, site + 8) or_return
 		copy(code[site - 4:], "\x64\x48\x8b\x04\x25\x00\x00\x00\x00\x48\x8d\x80")
 		(^i32)(&code[site + 8])^ = tp_offset

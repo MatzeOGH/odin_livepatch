@@ -2,7 +2,6 @@
 package livepatch
 
 import "core:encoding/varint"
-import "core:fmt"
 import "core:mem"
 import "core:slice"
 import "core:strings"
@@ -73,7 +72,7 @@ next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Obje
 	case section_holds_variables(object.view, section):
 		symbol.kind = .Data
 	case:
-		symbol.kind = .Read_Only
+		symbol.kind = .Skipped
 	}
 	return symbol, true
 }
@@ -150,12 +149,11 @@ needs_near_address :: proc(refs: Near_References, name: string) -> bool {
 }
 
 Elf_Rewrite :: struct {
-	object:             ^Loaded_Object,
-	merged:             ^Merged,
-	added_syms:         [dynamic]Elf64_Sym,
-	added_strings:      [dynamic]u8,
-	alias_index:        map[string]u32,  // `lp$N`: its symbol index in this object
-	symbols_by_section: [][dynamic]int,  // section index: the named symbols that it defines
+	object:        ^Loaded_Object,
+	merged:        ^Merged,
+	added_syms:    [dynamic]Elf64_Sym,
+	added_strings: [dynamic]u8,
+	alias_index:   map[string]u32, // `lp$N`: its symbol index in this object
 }
 
 Relocation_Class :: enum {
@@ -168,22 +166,11 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 	data := object.data
 	view := object.view
 	rewrite := Elf_Rewrite{
-		object             = object,
-		merged             = merged,
-		added_syms         = make([dynamic]Elf64_Sym, context.temp_allocator),
-		added_strings      = make([dynamic]u8, context.temp_allocator),
-		alias_index        = make(map[string]u32, context.temp_allocator),
-		symbols_by_section = make([][dynamic]int, len(view.sections), context.temp_allocator),
-	}
-	for &list in rewrite.symbols_by_section {
-		list = make([dynamic]int, context.temp_allocator)
-	}
-	for &sym, symbol_index in view.syms {
-		section_index := elf_symbol_section_index(view, sym) or_continue
-		sym_type := sym.info.type
-		if sym_type != STT_SECTION && sym_type != STT_FILE && sym.name != 0 {
-			append(&rewrite.symbols_by_section[section_index], symbol_index)
-		}
+		object        = object,
+		merged        = merged,
+		added_syms    = make([dynamic]Elf64_Sym, context.temp_allocator),
+		added_strings = make([dynamic]u8, context.temp_allocator),
+		alias_index   = make(map[string]u32, context.temp_allocator),
 	}
 
 	for rela_section in view.sections {
@@ -220,16 +207,24 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 					return nil, name if name != "" else "<thread-local>"
 				}
 			case .Other:
-				target_offset := rela.addend
-				if in_code {
-					target_offset = reference_target_offset(rela_type, rela.addend, section_bytes, int(rela.offset))
+				sym := view.syms[symbol_index]
+				if sym.info.type == STT_SECTION {
+					// Odin gives each variable a named symbol. A reference through the section would
+					// bind to the copy in the patch, not to the exe variable.
+					section_index, defined := elf_symbol_section_index(view, sym)
+					if allocated && defined && section_holds_variables(view, view.sections[section_index]) {
+						return nil, elf_section_name(view, view.sections[section_index])
+					}
+					continue
 				}
-				if key, bound := binding_key(&rewrite, symbol_index, target_offset); bound {
-					// A call or a tail jmp goes to the trampoline. A reference to the address stays on the exe entry.
-					is_call := in_code && rela_type == R_X86_64_PLT32 && view.syms[symbol_index].info.type != STT_SECTION
-					alias := alias_in(&merged.call_aliases, "lp$c", key) if is_call else alias_in(&merged.aliases, "lp$", key)
-					rela.info = Elf_Rela_Info{symbol = alias_symbol_index(&rewrite, alias), type = rela_type}
+				name := elf_symbol_name(view, sym)
+				if name == "" || name not_in merged.defs {
+					continue
 				}
+				// A call or a tail jmp goes to the trampoline. A reference to the address stays on the exe entry.
+				is_call := in_code && rela_type == R_X86_64_PLT32
+				alias := alias_in(&merged.call_aliases, "lp$c", name) if is_call else alias_in(&merged.aliases, "lp$", name)
+				rela.info = Elf_Rela_Info{symbol = alias_symbol_index(&rewrite, alias), type = rela_type}
 			}
 		}
 	}
@@ -254,44 +249,6 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 	return out, ""
 }
 
-binding_key :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, target_offset: i64) -> (key: string, ok: bool) {
-	view := rewrite.object.view
-	sym := view.syms[symbol_index]
-	if sym.info.type != STT_SECTION {
-		name := elf_symbol_name(view, sym)
-		if name != "" && name in rewrite.merged.defs {
-			return name, true
-		}
-		return
-	}
-
-	section_index := elf_symbol_section_index(view, sym) or_return
-	section := view.sections[section_index]
-	if section.flags & (SHF_ALLOC | SHF_TLS) != SHF_ALLOC || !section_holds_variables(view, section) {
-		return
-	}
-	holder_index := symbol_covering_offset(rewrite, section_index, target_offset) or_return
-	holder_name := elf_symbol_name(view, view.syms[holder_index])
-	live_address := rewrite.merged.defs[holder_name] or_return
-	holder_value := view.syms[holder_index].value
-	key = fmt.tprintf("%s\x00%x", holder_name, holder_value)
-	if key not_in rewrite.merged.defs {
-		rewrite.merged.defs[key] = rawptr(uintptr(live_address) - uintptr(holder_value))
-	}
-	return key, true
-}
-
-symbol_covering_offset :: proc(rewrite: ^Elf_Rewrite, section_index: int, offset: i64) -> (symbol_index: int, ok: bool) {
-	for candidate in rewrite.symbols_by_section[section_index] {
-		sym := &rewrite.object.view.syms[candidate]
-		start := i64(sym.value)
-		if offset >= start && offset < start + max(i64(sym.size), 1) {
-			return candidate, true
-		}
-	}
-	return
-}
-
 alias_symbol_index :: proc(rewrite: ^Elf_Rewrite, alias: string) -> u32 {
 	if index, found := rewrite.alias_index[alias]; found {
 		return index
@@ -309,16 +266,10 @@ alias_symbol_index :: proc(rewrite: ^Elf_Rewrite, alias: string) -> u32 {
 	return index
 }
 
+// Odin gives each thread-local a named symbol. A section symbol has no name, so it is not found.
 thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_in_symbol: i64) -> (offset: i32, ok: bool) {
 	view := rewrite.object.view
 	sym := view.syms[symbol_index]
-	offset_in_symbol := offset_in_symbol
-	if sym.info.type == STT_SECTION {
-		section_index := elf_symbol_section_index(view, sym) or_return
-		holder_index := symbol_covering_offset(rewrite, section_index, offset_in_symbol) or_return
-		offset_in_symbol -= i64(view.syms[holder_index].value)
-		sym = view.syms[holder_index]
-	}
 	symbol_offset := exe_tls_offset(elf_symbol_name(view, sym), rewrite.merged.keys) or_return
 	total := symbol_offset + offset_in_symbol
 	if total < i64(min(i32)) || total > i64(max(i32)) {

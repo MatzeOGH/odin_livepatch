@@ -109,6 +109,10 @@ when LIVEPATCH {
 			return pending, No_Objects_Mapped{}
 		}
 
+		if len(pending.objects) == 1 {
+			return pending, Build_Failed{kind = .No_Separate_Modules}
+		}
+
 		pending.merged = merge_symbols(pending.objects)
 		if grew := pending.merged.grew; grew.name != "" {
 			return pending, Global_Grew{error_text(grew.name), grew.old_size, grew.new_size}

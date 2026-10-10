@@ -57,6 +57,7 @@ Build_Error_Kind :: enum {
 	Cannot_Create_Dir,
 	Cannot_Run_Script,
 	Script_Failed,
+	No_Separate_Modules, // the build made one object: the script must use -use-separate-modules
 }
 
 No_Map            :: struct {}

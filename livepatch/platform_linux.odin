@@ -509,7 +509,9 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
 	}
 
-	return run_linker_command({linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)})
+	run_linker_command({linker_path, strings.concatenate({"@", response_path}, context.temp_allocator)}) or_return
+	os.remove(response_path) // kept when the link fails, to examine the command
+	return nil
 }
 
 @(private = "file")
@@ -549,6 +551,8 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 	if read_err != nil {
 		return {}, Load_Failed{kind = .Load_Library_Failed, os_error = read_err}
 	}
+
+	os.remove(elf_path)
 	defer if err != nil {
 		delete(data, allocator)
 	}
@@ -605,7 +609,10 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		if page < end && protection == run_protection {
 			continue
 		}
-		linux.mprotect(rawptr(run_start), uint(page - run_start), run_protection)
+		if protect_err := linux.mprotect(rawptr(run_start), uint(page - run_start), run_protection); protect_err != .NONE {
+			linux.munmap(mapping, uint(end - start))
+			return {}, Load_Failed{kind = .Load_Library_Failed, os_error = os.Platform_Error(protect_err)}
+		}
 		if page >= end {
 			break
 		}

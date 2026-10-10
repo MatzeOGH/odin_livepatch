@@ -121,27 +121,34 @@ merge_symbols :: proc(objects: []Loaded_Object) -> (merged: Merged) {
 resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 	near_refs: Near_References
 	have_near_refs := false
+
 	for object in objects {
 		cursor := 0
+
 		for symbol in next_object_symbol(object, &cursor) {
 			if symbol.kind != .Undefined {
 				continue
 			}
+
 			name := symbol.name
 			if name in merged.defs || name in merged.defined || name in merged.externals {
 				continue
 			}
+
 			addr, found := exe_symbol_address(name, merged.keys)
 			if !found {
 				addr, found = loaded_export(name)
 			}
+
 			if !found {
 				return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 			}
+
 			if !is_near(uintptr(addr)) {
 				if !have_near_refs {
 					near_refs, have_near_refs = find_near_references(objects), true
 				}
+
 				if needs_near_address(near_refs, name) {
 					slot := slot_for(strings.concatenate({"far:", name}, context.temp_allocator))
 					if slot == nil {
@@ -162,6 +169,7 @@ alias_in :: proc(aliases: ^map[string]string, prefix, name: string) -> string {
 	if alias, found := aliases[name]; found {
 		return alias
 	}
+
 	alias := fmt.tprintf("%s%d", prefix, len(aliases))
 	aliases[name] = alias
 	return alias
