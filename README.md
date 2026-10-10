@@ -135,7 +135,7 @@ When `patch()` returns an error, the running program does not change.
 
 | Error | Cause |
 | --- | --- |
-| `Build_Failed` | The build script failed or did not start. `output` has the compiler output. |
+| `Build_Failed` | The build script failed or did not start. `output` has the compiler output. `kind` is `.No_Separate_Modules` when the build made one object: the script must use `-use-separate-modules`. |
 | `No_Map` | Windows: the exe has no `.map` file (no `/MAP`). Linux: the exe is stripped. |
 | `No_Objects_Mapped` | An object file could not be read or rewritten. |
 | `Unresolved_Symbol` | The new code uses a symbol that `patch()` cannot bind, such as a new `@thread_local`. |
