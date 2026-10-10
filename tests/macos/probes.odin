@@ -171,4 +171,4 @@ probe_suspend_pc :: proc(t: ^testing.T) {
 	log.infof("pc %x, spin at %x", state.pc, entry)
 	testing.expect(t, state.pc >= entry && state.pc < entry + 256, "the pc is in spin")
 }
-}
+
