@@ -65,6 +65,7 @@ when LIVEPATCH {
 		if job.err != nil {
 			return true, job.err
 		}
+		context.temp_allocator = virtual.arena_allocator(&job.arena)
 		return true, apply(&job.pending)
 	}
 
@@ -119,13 +120,14 @@ when LIVEPATCH {
 			return pending, Global_Needs_Init{error_text(name)}
 		}
 		for &object in pending.objects {
-			out, failed := retarget_object_references(&object, &pending.merged)
+			failed: string
+			object.out, failed = retarget_object_references(&object, &pending.merged)
 			if failed != "" {
 				return pending, Unresolved_Symbol{error_text(failed), error_text(object.path)}
 			}
-			if os.write_entire_file(object.path, out) != nil {
-				return pending, No_Objects_Mapped{}
-			}
+		}
+		if !write_objects(output_dir, pending.objects) {
+			return pending, No_Objects_Mapped{}
 		}
 		pending.bind_time = time.tick_since(phase_start)
 

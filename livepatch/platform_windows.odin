@@ -268,10 +268,8 @@ run_linker :: proc(objects: []Loaded_Object, absolute_object_path, stem: string,
 		fmt.sbprintf(&response, "/debug:full\n")
 	}
 	fmt.sbprintf(&response, "/opt:noref /opt:noicf\n")
-	fmt.sbprintf(&response, "\"/out:%s\"\n\"/map:%s\"\n\"%s\"\n", dll_path, map_path, absolute_object_path)
-	for &object in objects {
-		fmt.sbprintf(&response, "\"%s\"\n", object.path)
-	}
+	archive_path := object_archive_path(filepath.dir(absolute_object_path))
+	fmt.sbprintf(&response, "\"/out:%s\"\n\"/map:%s\"\n\"%s\"\n\"/wholearchive:%s\"\n", dll_path, map_path, absolute_object_path, archive_path)
 	response_path := strings.concatenate({stem, ".rsp"}, context.temp_allocator)
 	if write_err := os.write_entire_file(response_path, transmute([]u8)strings.to_string(response)); write_err != nil {
 		return Load_Failed{kind = .Cannot_Write_File, os_error = write_err}
@@ -291,7 +289,7 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		win.FreeLibrary(dll)
 		return {}, Load_Failed{kind = .Wrong_Load_Base}
 	}
-	symbols, _ := read_msvc_map(map_path, base, context.temp_allocator, stable_keys = false)
+	symbols, _ := read_msvc_map(map_path, base, stable_keys = false, allocator = context.temp_allocator)
 	return symbols, nil
 }
 
