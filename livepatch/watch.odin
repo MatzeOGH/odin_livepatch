@@ -24,7 +24,7 @@ when LIVEPATCH {
 			}
 		}
 
-		stored_root, clone_err := strings.clone(path, context.allocator)
+		stored_root, clone_err := strings.clone(path)
 		if clone_err != nil {
 			return "", Watch_Start_Failed{kind = .Out_Of_Memory}
 		}

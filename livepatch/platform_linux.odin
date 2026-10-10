@@ -1,7 +1,6 @@
 #+build linux amd64
 package livepatch
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -75,7 +74,7 @@ load_exe_symbols :: proc(exe_path: string) {
 	exe_end = mem.align_forward_uintptr(exe_bias + link_end, PAGE_SIZE)
 	exe_view = view
 
-	sections := make([dynamic]Exe_Section, context.allocator)
+	sections := make([dynamic]Exe_Section)
 
 	for section in view.sections {
 		if section.flags & SHF_ALLOC == 0 {
@@ -533,7 +532,7 @@ find_linker :: proc() -> (path, flags: string, ok: bool) {
 		first_line, _, _ := strings.partition(string(stdout), "\n")
 		for kind in LINKER_KINDS {
 			if strings.contains(first_line, kind.version) {
-				found_linker_path = strings.clone(path, runtime.heap_allocator())
+				found_linker_path = strings.clone(path)
 				found_linker_flags = kind.flags
 				return found_linker_path, found_linker_flags, true
 			}

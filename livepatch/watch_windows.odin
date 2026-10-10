@@ -1,6 +1,7 @@
 #+build windows amd64
 package livepatch
 
+@(require) import "base:runtime"
 @(require) import "core:os"
 @(require) import "core:time"
 @(require) import win "core:sys/windows"
@@ -12,6 +13,7 @@ when LIVEPATCH {
 		event:         win.HANDLE,
 		overlapped:    win.OVERLAPPED,
 		source_root:   string,
+		allocator:     runtime.Allocator,
 		buffer:        [64 * 1024]u8,
 		pending:       bool,
 		pending_since: time.Tick,
@@ -22,7 +24,7 @@ when LIVEPATCH {
 	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
 		root := watch_root(source_root) or_return
 		defer if err != nil {
-			delete(root, context.allocator)
+			delete(root)
 		}
 
 		wroot := win.utf8_to_utf16(root, context.temp_allocator)
@@ -53,6 +55,7 @@ when LIVEPATCH {
 			directory   = directory,
 			event       = event,
 			source_root = root,
+			allocator   = context.allocator,
 			active      = true,
 		}
 		return watcher, nil
@@ -100,7 +103,7 @@ when LIVEPATCH {
 		}
 		_ = win.CloseHandle(watcher.event)
 		_ = win.CloseHandle(watcher.directory)
-		delete(watcher.source_root, context.allocator)
+		delete(watcher.source_root, watcher.allocator)
 		watcher^ = {}
 	}
 

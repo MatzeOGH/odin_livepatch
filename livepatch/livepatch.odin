@@ -48,7 +48,7 @@ when LIVEPATCH {
 		if virtual.arena_init_growing(&job.arena) != nil {
 			return Build_Failed{kind = .Out_Of_Memory}
 		}
-		job.script = strings.clone(build_script)
+		job.script = strings.clone(build_script, virtual.arena_allocator(&job.arena))
 		job.done = false
 		job.thread = thread.create_and_start(worker)
 		return nil
@@ -60,7 +60,6 @@ when LIVEPATCH {
 		}
 		thread.destroy(job.thread) // the worker has returned, so this does not wait
 		job.thread = nil
-		delete(job.script)
 		defer virtual.arena_destroy(&job.arena)
 		if job.err != nil {
 			return true, job.err
@@ -193,7 +192,7 @@ when LIVEPATCH {
 	}
 
 	init_once :: proc() -> Error {
-		exe_path, path_err := os.get_executable_path(context.allocator)
+		exe_path, path_err := os.get_executable_path(context.temp_allocator)
 		if path_err != nil {
 			return No_Map{}
 		}

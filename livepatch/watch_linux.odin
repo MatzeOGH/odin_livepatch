@@ -1,6 +1,7 @@
 #+build linux amd64
 package livepatch
 
+@(require) import "base:runtime"
 @(require) import "core:os"
 @(require) import "core:path/filepath"
 @(require) import "core:strings"
@@ -12,6 +13,7 @@ when LIVEPATCH {
 	Watcher :: struct {
 		fd:            linux.Fd,
 		source_root:   string,
+		allocator:     runtime.Allocator, // of the strings: the context.allocator of watch_start
 		directories:   map[linux.Wd]string, // watch -> its directory
 		buffer:        [64 * 1024]u8,
 		pending:       bool,
@@ -26,14 +28,15 @@ when LIVEPATCH {
 
 		fd, ierr := linux.inotify_init1({.NONBLOCK, .CLOEXEC})
 		if ierr != .NONE {
-			delete(root, context.allocator)
+			delete(root)
 			return {}, Watch_Start_Failed{kind = .Cannot_Create_Event, os_error = os.Platform_Error(ierr)}
 		}
 
 		watcher = Watcher{
 			fd          = fd,
 			source_root = root,
-			directories = make(map[linux.Wd]string, context.allocator),
+			allocator   = context.allocator,
+			directories = make(map[linux.Wd]string),
 			active      = true,
 		}
 		if write_err := watch_add_tree(&watcher, root); write_err != .NONE {
@@ -75,10 +78,10 @@ when LIVEPATCH {
 		}
 		_ = linux.close(watcher.fd)
 		for _, dir in watcher.directories {
-			delete(dir, context.allocator)
+			delete(dir, watcher.allocator)
 		}
 		delete(watcher.directories)
-		delete(watcher.source_root, context.allocator)
+		delete(watcher.source_root, watcher.allocator)
 		watcher^ = {}
 	}
 
@@ -89,9 +92,9 @@ when LIVEPATCH {
 			return err
 		}
 		if old, found := watcher.directories[wd]; found {
-			delete(old, context.allocator) // the same directory, seen again
+			delete(old, watcher.allocator) // the same directory, seen again
 		}
-		watcher.directories[wd] = strings.clone(dir, context.allocator)
+		watcher.directories[wd] = strings.clone(dir, watcher.allocator)
 
 		entries, _ := os.read_all_directory_by_path(dir, context.temp_allocator)
 		for entry in entries {
@@ -119,7 +122,7 @@ when LIVEPATCH {
 				affects = true // events were lost
 			case .IGNORED in event.mask:
 				if dir, found := watcher.directories[event.wd]; found {
-					delete(dir, context.allocator)
+					delete(dir, watcher.allocator)
 					delete_key(&watcher.directories, event.wd)
 				}
 			case .ISDIR in event.mask:
