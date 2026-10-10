@@ -186,119 +186,121 @@ Macho_View :: struct {
 	chained_fixups: bool, // pointers that only dyld can decode
 }
 
-macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (v: Macho_View, ok: bool) {
+macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view: Macho_View, ok: bool) {
 	if len(data) < size_of(Mach_Header_64) {
 		return
 	}
-	h := (^Mach_Header_64)(raw_data(data))
-	if h.magic != MH_MAGIC_64 || h.cputype != CPU_TYPE_ARM64 {
+	header := (^Mach_Header_64)(raw_data(data))
+	if header.magic != MH_MAGIC_64 || header.cputype != CPU_TYPE_ARM64 {
 		return
 	}
-	v.header = h
-	v.segments = make([dynamic]^Segment_Command_64, allocator)
-	v.sections = make([dynamic]^Section_64, allocator)
-	off := size_of(Mach_Header_64)
-	end := off + int(h.sizeofcmds)
+	view.header = header
+	view.segments = make([dynamic]^Segment_Command_64, allocator)
+	view.sections = make([dynamic]^Section_64, allocator)
+	offset := size_of(Mach_Header_64)
+	end := offset + int(header.sizeofcmds)
 	if end > len(data) {
 		return
 	}
-	for _ in 0 ..< h.ncmds {
-		if off + size_of(Load_Command) > end {
+	for _ in 0 ..< header.ncmds {
+		if offset + size_of(Load_Command) > end {
 			return
 		}
-		lc := (^Load_Command)(raw_data(data[off:]))
-		if lc.cmdsize < size_of(Load_Command) || off + int(lc.cmdsize) > end {
+		command := (^Load_Command)(raw_data(data[offset:]))
+		if command.cmdsize < size_of(Load_Command) || offset + int(command.cmdsize) > end {
 			return
 		}
-		switch lc.cmd {
+		switch command.cmd {
 		case LC_SEGMENT_64:
-			if int(lc.cmdsize) < size_of(Segment_Command_64) {
+			if int(command.cmdsize) < size_of(Segment_Command_64) {
 				return
 			}
-			seg := (^Segment_Command_64)(lc)
-			if size_of(Segment_Command_64) + int(seg.nsects) * size_of(Section_64) > int(lc.cmdsize) {
+			segment := (^Segment_Command_64)(command)
+			if size_of(Segment_Command_64) + int(segment.nsects) * size_of(Section_64) > int(command.cmdsize) {
 				return
 			}
-			append(&v.segments, seg)
-			first := ([^]Section_64)(rawptr(uintptr(seg) + size_of(Segment_Command_64)))
-			for i in 0 ..< int(seg.nsects) {
-				append(&v.sections, &first[i])
+			append(&view.segments, segment)
+			first := ([^]Section_64)(rawptr(uintptr(segment) + size_of(Segment_Command_64)))
+			for &section in first[:segment.nsects] {
+				append(&view.sections, &section)
 			}
 		case LC_SYMTAB:
-			v.symtab = (^Symtab_Command)(lc)
+			view.symtab = (^Symtab_Command)(command)
 		case LC_DYSYMTAB:
-			v.dysymtab = (^Dysymtab_Command)(lc)
+			view.dysymtab = (^Dysymtab_Command)(command)
 		case LC_BUILD_VERSION:
-			v.build = (^Build_Version_Command)(lc)
+			view.build = (^Build_Version_Command)(command)
 		case LC_LINKER_OPTIMIZATION_HINT:
-			v.loh = (^Linkedit_Data_Command)(lc)
+			view.loh = (^Linkedit_Data_Command)(command)
 		case LC_DYLD_CHAINED_FIXUPS:
-			v.chained_fixups = true
+			view.chained_fixups = true
 		}
-		off += int(lc.cmdsize)
+		offset += int(command.cmdsize)
 	}
-	if st := v.symtab; st != nil {
-		if int(st.symoff) + int(st.nsyms) * size_of(Nlist_64) > len(data) || int(st.stroff) + int(st.strsize) > len(data) {
+	if symtab := view.symtab; symtab != nil {
+		if int(symtab.symoff) + int(symtab.nsyms) * size_of(Nlist_64) > len(data) || int(symtab.stroff) + int(symtab.strsize) > len(data) {
 			return
 		}
-		v.syms = slice.reinterpret([]Nlist_64, data[st.symoff:][:int(st.nsyms) * size_of(Nlist_64)])
-		v.strtab = data[st.stroff:][:st.strsize]
+		view.syms = slice.reinterpret([]Nlist_64, data[symtab.symoff:][:int(symtab.nsyms) * size_of(Nlist_64)])
+		view.strtab = data[symtab.stroff:][:symtab.strsize]
 	}
-	return v, true
+	return view, true
 }
 
-fixed_name :: proc(b: ^[16]u8) -> string {
-	return strings.truncate_to_byte(string(b[:]), 0)
+// A pointer, because an array parameter cannot be sliced
+fixed_name :: proc(name: ^[16]u8) -> string {
+	return strings.truncate_to_byte(string(name[:]), 0)
 }
 
-macho_raw_name :: proc(v: ^Macho_View, sym: ^Nlist_64) -> string {
-	if int(sym.n_strx) >= len(v.strtab) {
+macho_raw_name :: proc(view: Macho_View, sym: Nlist_64) -> string {
+	if int(sym.n_strx) >= len(view.strtab) {
 		return ""
 	}
-	return strings.truncate_to_byte(string(v.strtab[sym.n_strx:]), 0)
+	return strings.truncate_to_byte(string(view.strtab[sym.n_strx:]), 0)
 }
 
-macho_symbol_name :: proc(v: ^Macho_View, sym: ^Nlist_64) -> string {
-	return strings.trim_prefix(macho_raw_name(v, sym), "_")
+macho_symbol_name :: proc(view: Macho_View, sym: Nlist_64) -> string {
+	return strings.trim_prefix(macho_raw_name(view, sym), "_")
 }
 
 macho_is_temporary :: proc(raw: string) -> bool {
 	return !strings.has_prefix(raw, "_")
 }
 
-macho_symbol_section :: proc(v: ^Macho_View, sym: ^Nlist_64) -> ^Section_64 {
-	if sym.n_type & (N_STAB | N_TYPE) != N_SECT || sym.n_sect == NO_SECT || int(sym.n_sect) > len(v.sections) {
+macho_symbol_section :: proc(view: Macho_View, sym: Nlist_64) -> ^Section_64 {
+	if sym.n_type & (N_STAB | N_TYPE) != N_SECT || sym.n_sect == NO_SECT || int(sym.n_sect) > len(view.sections) {
 		return nil
 	}
-	return v.sections[sym.n_sect - 1]
+	return view.sections[sym.n_sect - 1]
 }
 
-macho_section_bytes :: proc(data: []byte, sh: ^Section_64) -> (bytes: []byte, ok: bool) {
-	switch sh.flags & SECTION_TYPE {
+// The section procedures take ^Section_64 because Macho_View holds pointers into the file.
+macho_section_bytes :: proc(data: []byte, section: ^Section_64) -> (bytes: []byte, ok: bool) {
+	switch section.flags & SECTION_TYPE {
 	case S_ZEROFILL, S_GB_ZEROFILL, S_THREAD_LOCAL_ZEROFILL:
 		return {}, true
 	}
-	if int(sh.offset) + int(sh.size) > len(data) {
+	if int(section.offset) + int(section.size) > len(data) {
 		return
 	}
-	return data[sh.offset:][:sh.size], true
+	return data[section.offset:][:section.size], true
 }
 
-macho_section_relocs :: proc(data: []byte, sh: ^Section_64) -> (relocs: []Relocation_Info, ok: bool) {
-	size := int(sh.nreloc) * size_of(Relocation_Info)
-	if int(sh.reloff) + size > len(data) {
+macho_section_relocs :: proc(data: []byte, section: ^Section_64) -> (relocs: []Relocation_Info, ok: bool) {
+	size := int(section.nreloc) * size_of(Relocation_Info)
+	if int(section.reloff) + size > len(data) {
 		return
 	}
-	return slice.reinterpret([]Relocation_Info, data[sh.reloff:][:size]), true
+	return slice.reinterpret([]Relocation_Info, data[section.reloff:][:size]), true
 }
 
-macho_is_thread_local :: proc(sh: ^Section_64) -> bool {
-	type := sh.flags & SECTION_TYPE
+macho_is_thread_local :: proc(section: ^Section_64) -> bool {
+	type := section.flags & SECTION_TYPE
 	return type >= S_THREAD_LOCAL_REGULAR && type <= S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
 }
 
-macho_is_code :: proc(sh: ^Section_64) -> bool {
-	return sh.flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS) != 0
+macho_is_code :: proc(section: ^Section_64) -> bool {
+	return section.flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS) != 0
 }
 
 Macho_Symbols :: struct {
@@ -306,26 +308,25 @@ Macho_Symbols :: struct {
 	starts:  [dynamic]uintptr,   // live address of every symbol
 }
 
-read_macho_symbols :: proc(v: ^Macho_View, slide: uintptr, allocator := context.allocator, stable_keys := true) -> (out: Macho_Symbols) {
+read_macho_symbols :: proc(view: Macho_View, slide: uintptr, stable_keys := true, allocator := context.allocator) -> (out: Macho_Symbols) {
 	out.symbols = make(map[string]uintptr, allocator)
 	out.starts = make([dynamic]uintptr, allocator)
 
 	keys: Static_Keys
 	if stable_keys {
 		names := make([dynamic]string, context.temp_allocator)
-		for &sym in v.syms {
-			append(&names, macho_symbol_name(v, &sym))
+		for sym in view.syms {
+			append(&names, macho_symbol_name(view, sym))
 		}
 		keys = static_keys_make(names[:])
 	}
 
 	ambiguous := make(map[string]bool, context.temp_allocator)
-	for &sym in v.syms {
-		sh := macho_symbol_section(v, &sym)
-		if sh == nil {
+	for sym in view.syms {
+		if macho_symbol_section(view, sym) == nil {
 			continue
 		}
-		raw := macho_raw_name(v, &sym)
+		raw := macho_raw_name(view, sym)
 		if raw == "" {
 			continue
 		}
@@ -334,8 +335,7 @@ read_macho_symbols :: proc(v: ^Macho_View, slide: uintptr, allocator := context.
 		if macho_is_temporary(raw) {
 			continue
 		}
-		key := data_key(keys, raw[1:])
-		index_add(&out.symbols, &ambiguous, key, live, allocator)
+		index_add(&out.symbols, &ambiguous, data_key(keys, raw[1:]), live, allocator)
 	}
 	return
 }

@@ -41,12 +41,12 @@ Fixup_Kind :: enum u8 {
 marker_count: int
 
 Macho_Rewrite :: struct {
-	o:          ^Loaded_Object,
-	merged:     ^Merged,
-	markers:    [dynamic]Nlist_64,
-	new_strs:   [dynamic]u8,
-	marker_at:  map[[2]u64]string, // section index, atom address -> its marker
-	by_section: [][dynamic]Section_Symbol, // section index -> its defined symbols, by address
+	object:             ^Loaded_Object,
+	merged:             ^Merged,
+	markers:            [dynamic]Nlist_64,
+	added_strings:      [dynamic]u8,
+	marker_at:          map[[2]u64]string, // section index, atom address -> its marker
+	symbols_by_section: [][dynamic]Section_Symbol, // section index -> its defined symbols, by address
 }
 
 Section_Symbol :: struct {
