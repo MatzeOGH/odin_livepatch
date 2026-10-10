@@ -13,6 +13,7 @@ when LIVEPATCH {
 	Watcher :: struct {
 		fd:            linux.Fd,
 		source_root:   string,
+		extensions:    []string,
 		allocator:     runtime.Allocator, // of the strings: the context.allocator of watch_start
 		directories:   map[linux.Wd]string, // watch -> its directory
 		buffer:        [64 * 1024]u8,
@@ -23,7 +24,7 @@ when LIVEPATCH {
 
 	WATCH_MASK :: linux.Inotify_Event_Mask{.MODIFY, .CLOSE_WRITE, .MOVED_FROM, .MOVED_TO, .CREATE, .DELETE, .ONLYDIR}
 
-	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
+	watch_start :: proc(source_root: string, extensions: []string = nil) -> (watcher: Watcher, err: Watch_Error) {
 		root := watch_root(source_root) or_return
 
 		fd, ierr := linux.inotify_init1({.NONBLOCK, .CLOEXEC})
@@ -35,6 +36,7 @@ when LIVEPATCH {
 		watcher = Watcher{
 			fd          = fd,
 			source_root = root,
+			extensions  = watch_clone_extensions(extensions),
 			allocator   = context.allocator,
 			directories = make(map[linux.Wd]string),
 			active      = true,
@@ -82,6 +84,7 @@ when LIVEPATCH {
 		}
 		delete(watcher.directories)
 		delete(watcher.source_root, watcher.allocator)
+		watch_delete_extensions(watcher.extensions, watcher.allocator)
 		watcher^ = {}
 	}
 
@@ -133,7 +136,7 @@ when LIVEPATCH {
 						_ = watch_add_tree(watcher, path)
 					}
 				}
-			case watch_change_affects_sources(name):
+			case watch_change_affects_sources(name, watcher.extensions):
 				affects = true
 			}
 		}

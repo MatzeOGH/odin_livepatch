@@ -1,6 +1,7 @@
 #+build windows amd64, linux amd64
 package livepatch
 
+@(require) import "base:runtime"
 @(require) import "core:os"
 @(require) import "core:path/filepath"
 @(require) import "core:strings"
@@ -31,9 +32,32 @@ when LIVEPATCH {
 		return stored_root, nil
 	}
 
-	// ignore anything but .odin files
-	watch_change_affects_sources :: proc(name: string) -> bool {
-		return strings.equal_fold(filepath.ext(name), ".odin")
+	watch_clone_extensions :: proc(extensions: []string) -> []string {
+		cloned := make([]string, len(extensions))
+		for extension, i in extensions {
+			cloned[i] = strings.clone(extension)
+		}
+		return cloned
+	}
+
+	watch_delete_extensions :: proc(extensions: []string, allocator: runtime.Allocator) {
+		for extension in extensions {
+			delete(extension, allocator)
+		}
+		delete(extensions, allocator)
+	}
+
+	watch_change_affects_sources :: proc(name: string, extensions: []string) -> bool {
+		ext := filepath.ext(name)
+		if strings.equal_fold(ext, ".odin") {
+			return true
+		}
+		for extension in extensions {
+			if strings.equal_fold(ext, extension) {
+				return true
+			}
+		}
+		return false
 	}
 
 }

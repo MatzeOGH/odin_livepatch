@@ -13,6 +13,7 @@ when LIVEPATCH {
 		event:         win.HANDLE,
 		overlapped:    win.OVERLAPPED,
 		source_root:   string,
+		extensions:    []string,
 		allocator:     runtime.Allocator,
 		buffer:        [64 * 1024]u8,
 		pending:       bool,
@@ -21,7 +22,7 @@ when LIVEPATCH {
 		active:        bool,
 	}
 
-	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
+	watch_start :: proc(source_root: string, extensions: []string = nil) -> (watcher: Watcher, err: Watch_Error) {
 		root := watch_root(source_root) or_return
 		defer if err != nil {
 			delete(root)
@@ -55,6 +56,7 @@ when LIVEPATCH {
 			directory   = directory,
 			event       = event,
 			source_root = root,
+			extensions  = watch_clone_extensions(extensions),
 			allocator   = context.allocator,
 			active      = true,
 		}
@@ -104,6 +106,7 @@ when LIVEPATCH {
 		_ = win.CloseHandle(watcher.event)
 		_ = win.CloseHandle(watcher.directory)
 		delete(watcher.source_root, watcher.allocator)
+		watch_delete_extensions(watcher.extensions, watcher.allocator)
 		watcher^ = {}
 	}
 
@@ -142,7 +145,7 @@ when LIVEPATCH {
 
 			name16 := ([^]u16)(raw_data(info.FileName[:]))[:name_bytes / size_of(u16)]
 			name := win.utf16_to_utf8(name16, context.temp_allocator) or_else ""
-			if watch_change_affects_sources(name) {
+			if watch_change_affects_sources(name, watcher.extensions) {
 				return true
 			}
 
