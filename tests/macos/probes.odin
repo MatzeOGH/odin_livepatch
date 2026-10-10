@@ -132,4 +132,43 @@ redirect_probe_target :: proc(t: ^testing.T, value: u32) -> bool {
 	target_proc := intrinsics.volatile_load(&probe_target_pointer)
 	return testing.expect_value(t, target_proc(), i32(value))
 }
+
+spinning:  bool
+spin_port: darwin.thread_act_t
+
+spin :: #force_no_inline proc "contextless" () {
+	for intrinsics.atomic_load(&spinning) {}
+}
+
+@(test)
+probe_suspend_pc :: proc(t: ^testing.T) {
+	intrinsics.atomic_store(&spinning, true)
+	worker := thread.create_and_start(proc() {
+		intrinsics.atomic_store(&spin_port, pthread_mach_thread_np(posix.pthread_self()))
+		spin()
+	})
+	defer {
+		intrinsics.atomic_store(&spinning, false)
+		thread.join(worker)
+		thread.destroy(worker)
+	}
+	for intrinsics.atomic_load(&spin_port) == 0 {
+		time.sleep(time.Millisecond)
+	}
+	time.sleep(20 * time.Millisecond) // the worker is now in spin
+
+	port := intrinsics.atomic_load(&spin_port)
+	if !testing.expect_value(t, thread_suspend(port), 0) {
+		return
+	}
+	state: darwin.arm_thread_state64_t
+	count := u32(darwin.ARM_THREAD_STATE64_COUNT)
+	result := darwin.thread_get_state(port, darwin.ARM_THREAD_STATE64, darwin.thread_state_t(&state), &count)
+	testing.expect_value(t, thread_resume(port), 0)
+	testing.expect_value(t, result, darwin.Kern_Return.Success)
+
+	entry := u64(uintptr(rawptr(spin)))
+	log.infof("pc %x, spin at %x", state.pc, entry)
+	testing.expect(t, state.pc >= entry && state.pc < entry + 256, "the pc is in spin")
+}
 }
