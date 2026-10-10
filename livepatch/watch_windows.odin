@@ -21,10 +21,12 @@ when LIVEPATCH {
 
 	watch_start :: proc(source_root: string) -> (watcher: Watcher, err: Watch_Error) {
 		root := watch_root(source_root) or_return
+		defer if err != nil {
+			delete(root, context.allocator)
+		}
 
 		wroot := win.utf8_to_utf16(root, context.temp_allocator)
 		if wroot == nil {
-			delete(root, context.allocator)
 			return {}, Watch_Start_Failed{kind = .Out_Of_Memory}
 		}
 
@@ -38,14 +40,12 @@ when LIVEPATCH {
 			nil,
 		)
 		if directory == win.INVALID_HANDLE_VALUE {
-			delete(root, context.allocator)
 			return {}, Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(win.GetLastError())}
 		}
 
 		event := win.CreateEventW(nil, true, false, nil)
 		if event == nil {
 			win.CloseHandle(directory)
-			delete(root, context.allocator)
 			return {}, Watch_Start_Failed{kind = .Cannot_Create_Event, os_error = os.Platform_Error(win.GetLastError())}
 		}
 
@@ -63,10 +63,7 @@ when LIVEPATCH {
 			return false, nil
 		}
 		if !watcher.reading {
-			if err = watch_begin_read(watcher); err != nil {
-				return false, err
-			}
-			return false, nil
+			return false, watch_begin_read(watcher)
 		}
 
 		switch win.WaitForSingleObject(watcher.event, 0) {
@@ -80,9 +77,7 @@ when LIVEPATCH {
 				watcher.pending = true
 				watcher.pending_since = time.tick_now()
 			}
-			if err = watch_begin_read(watcher); err != nil {
-				return false, err
-			}
+			watch_begin_read(watcher) or_return
 		case:
 			return false, Watch_Failed{kind = .Cannot_Poll, os_error = os.Platform_Error(win.GetLastError())}
 		}
