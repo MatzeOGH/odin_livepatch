@@ -552,9 +552,10 @@ load_patch_module :: proc(stem: string, base: uintptr, objects: []Loaded_Object)
 		return {}, Load_Failed{kind = .Load_Library_Failed, os_error = read_err}
 	}
 
-	os.remove(elf_path)
 	defer if err != nil {
 		delete(data, allocator)
+	} else {
+		os.remove(elf_path)
 	}
 	view, ok := parse_elf(data)
 	if !ok || view.header.type != ET_EXEC {
