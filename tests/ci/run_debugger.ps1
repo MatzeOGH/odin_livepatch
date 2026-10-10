@@ -1,12 +1,13 @@
 # Runs the debugger tests: each test in tests\ci that has a debugger script for this system runs
 # under that debugger. Windows: debugger.ps1 (cdb) and debugger_raddbg.ps1 (RAD Debugger). Linux:
-# debugger_gdb.sh and debugger_lldb.sh. DEBUGGER selects one debugger, for example raddbg (default:
-# all). OPT is the -o: level (default: none). ODIN is the compiler (default: odin on PATH).
+# debugger_gdb.sh and debugger_lldb.sh. macOS: debugger_lldb.sh. DEBUGGER selects one debugger, for
+# example raddbg (default: all). OPT is the -o: level (default: none). ODIN is the compiler
+# (default: odin on PATH).
 # In GitHub Actions, it also writes a table of the results to the job summary.
 # Usage: tests\ci\run_debugger.ps1 [test,...]   (default: each directory with a debugger script)
 param([string[]]$Tests)
 
-$scripts = if ($IsWindows) { @('debugger.ps1', 'debugger_raddbg.ps1') } else { @('debugger_gdb.sh', 'debugger_lldb.sh') }
+$scripts = if ($IsWindows) { @('debugger.ps1', 'debugger_raddbg.ps1') } elseif ($IsMacOS) { @('debugger_lldb.sh') } else { @('debugger_gdb.sh', 'debugger_lldb.sh') }
 # The name of the debugger of a script
 function debugger_of($script) {
     $name = $script -replace '^debugger_?', '' -replace '\.(ps1|sh)$', ''

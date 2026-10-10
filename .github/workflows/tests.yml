@@ -194,11 +194,11 @@ jobs:
         run: tests/ci/run_debugger.ps1
 
   macos-arm:
-    # Port in progress: only the tests that pass on macOS so far. Add a test here when it passes.
+    # Port in progress: change_proc must pass, the other tests only show their status.
     name: macOS ARM -o:${{ matrix.opt }}
     needs: odin-macos-arm
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false # each -o: level reports on its own
       matrix:
@@ -220,6 +220,15 @@ jobs:
           ld -v 2>&1 | head -n 1
           /opt/homebrew/opt/lld/bin/ld64.lld --version
 
+      # tests/macos calls the system directly: a failure there is macOS, not livepatch.
+      # -o:none only: the -o: level does not change what macOS allows.
+      - name: macOS probes (remap code page, code near exe, thread pc, TLV)
+        if: matrix.opt == 'none'
+        shell: bash
+        run: >
+          odin test tests/macos -define:ODIN_TEST_LOG_LEVEL=debug -define:ODIN_TEST_FANCY=false
+          -define:ODIN_TEST_THREADS=1
+
       - name: Unit tests (Mach-O parsing, linker search)
         shell: bash # -o pipefail: the tee must not hide a failure
         # -use-separate-modules as in a livepatch build: else -o:speed makes every symbol internal
@@ -237,9 +246,28 @@ jobs:
           path: macho_test.log
           if-no-files-found: ignore
 
-      - name: Tests
+      # Must pass. Add a test here when it passes in the status step below.
+      - name: Tests (must pass)
         shell: pwsh
         run: tests/ci/run.ps1 change_proc
+
+      # Status only: the summary table shows each test that works on macOS so far.
+      # TEST_TIMEOUT: a hung test fails alone and the table is still written.
+      - name: All tests (status only)
+        if: '!cancelled()'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          TEST_TIMEOUT: 60
+        run: tests/ci/run.ps1
+
+      - name: Debugger tests (lldb, status only)
+        if: matrix.opt == 'none' && !cancelled()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          sudo DevToolsSecurity -enable
+          tests/ci/run_debugger.ps1
 
       - name: Upload the patch output on failure
         if: failure()

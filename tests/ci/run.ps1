@@ -2,6 +2,7 @@
 # Linux: build.sh and app. A test that has no build script for this system is skipped.
 # OPT is the -o: level (default: none, minimal and speed). ODIN is the compiler (default: odin on PATH).
 # Linux: RELOC=static builds with -reloc-mode:static (default: a PIE).
+# TEST_TIMEOUT stops an app that runs longer than this many seconds (default: no limit).
 # In GitHub Actions, it also writes a table of the results to the job summary.
 # Usage: tests\ci\run.ps1 [test,...]   (default: each directory in tests\ci)
 param([string[]]$Tests = (Get-ChildItem $PSScriptRoot -Directory).Name)
@@ -38,16 +39,33 @@ foreach ($opt in $opts) {
         if ($LASTEXITCODE -ne 0) {
             $problems += 'build failed'
         } else {
-            # Tee: the output goes to the log, and the failed checks to the summary
-            & (Join-Path $d $app_name) | Tee-Object -Variable output | Out-Host
-            if ($LASTEXITCODE -ne 0) {
+            $app = Join-Path $d $app_name
+            if ($env:TEST_TIMEOUT) {
+                # Start-Process: a hung app can be stopped. The output shows when the app ends.
+                $log = Join-Path $d 'app.log'
+                $process = Start-Process $app -PassThru -NoNewWindow -RedirectStandardOutput $log
+                $null = $process.Handle # else ExitCode is empty on Windows
+                $timed_out = -not $process.WaitForExit([int]$env:TEST_TIMEOUT * 1000)
+                if ($timed_out) { $process.Kill($true); $process.WaitForExit() }
+                $output = @(Get-Content $log)
+                $output | Out-Host
+                $exit_code = $process.ExitCode
+            } else {
+                # Tee: the output goes to the log, and the failed checks to the summary
+                & $app | Tee-Object -Variable output | Out-Host
+                $timed_out = $false
+                $exit_code = $LASTEXITCODE
+            }
+            if ($timed_out) {
+                $problems += "timeout after $env:TEST_TIMEOUT s"
+            } elseif ($exit_code -ne 0) {
                 # Each failed check, with the version line (v1, v2, ...) above it
                 $version = ''
                 $checks = @(foreach ($line in $output) {
                     if ($line -match '^v\d+$') { $version = "${line}: " }
                     elseif ($line -match '\bFAIL\b') { $version + $line.Trim() }
                 })
-                $problems += if ($checks) { $checks } else { "exit code $LASTEXITCODE" }
+                $problems += if ($checks) { $checks } else { "exit code $exit_code" }
             }
         }
 

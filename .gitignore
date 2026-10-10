@@ -29,6 +29,7 @@ tests/ci/*/app
 tests/ci/*/gdb.log
 tests/ci/*/gdb_commands.txt
 tests/ci/*/lldb.log
+tests/ci/*/app.log
 tests/ci/*/lldb_commands.txt
 tests/ci/*/raddbg.log
 tests/ci/*/test.raddbg_user
