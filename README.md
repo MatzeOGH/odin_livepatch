@@ -67,7 +67,7 @@ Import the package with a relative path, a collection
 | --- | --- |
 | `patch(script)` | Build and apply a patch. Blocks for the build. |
 | `patch_start(script)`, `patch_poll()` | Build on a worker thread. Call `patch_poll()` each frame. It applies the patch when the build is done. |
-| `watch_start(root)`, `watch_poll(&w)`, `watch_stop(&w)` | Report a settled change to a `.odin` file below `root`. You call `patch()`. |
+| `watch_start(root, extensions = nil)`, `watch_poll(&w)`, `watch_stop(&w)` | Report a settled change to a `.odin` file below `root`, or to a file with one of the `extensions`, as `{"wgsl"}` or `{".wgsl"}`. You call `patch()`. |
 | `error_delete(err)` | Free the strings in an error. |
 
 On an error, nothing changes. See [Errors and crashes](#errors-and-crashes).

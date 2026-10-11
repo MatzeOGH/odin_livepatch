@@ -2,6 +2,7 @@
 package livepatch
 
 import "base:runtime"
+import "core:mem"
 import "core:slice"
 import "core:strings"
 
@@ -71,4 +72,49 @@ exe_room :: proc(entry: rawptr) -> int {
 		room = min(room, int(exe_starts[next] - addr))
 	}
 	return max(room, 0)
+}
+
+near_range :: proc(reach := BRANCH_REACH) -> (lo, hi: uintptr, ok: bool) {
+	size := exe_image_size()
+	if size >= reach {
+		return
+	}
+	window := (reach - size) / 2
+	lo = exe_base() > window ? exe_base() - window : 0
+	return lo, exe_base() + size + window, true
+}
+
+is_near :: proc(addr: uintptr) -> bool {
+	lo, hi, ok := near_range()
+	return ok && addr >= lo && addr < hi
+}
+
+alloc_near :: proc(size: int, commit := true, reach := BRANCH_REACH, from := uintptr(0)) -> rawptr {
+	lo, hi, ok := near_range(reach)
+	if !ok {
+		return nil
+	}
+	STEP :: uintptr(0x0010_0000)
+	GRANULE :: uintptr(0x10000) // the allocation granularity of Windows, a multiple of each page size
+	rounded := mem.align_forward_uintptr(uintptr(size), GRANULE)
+	top := mem.align_forward_uintptr(exe_base() + exe_image_size(), GRANULE)
+	bottom := mem.align_backward_uintptr(exe_base(), GRANULE)
+	for offset := from; ; offset += STEP {
+		tried := false
+		if above := top + offset; above + rounded <= hi {
+			tried = true
+			if memory := page_alloc_at(above, size, commit); memory != nil {
+				return memory
+			}
+		}
+		if bottom >= offset + rounded && bottom - offset - rounded >= lo {
+			tried = true
+			if memory := page_alloc_at(bottom - offset - rounded, size, commit); memory != nil {
+				return memory
+			}
+		}
+		if !tried {
+			return nil
+		}
+	}
 }

@@ -8,7 +8,7 @@ MIRROR_DELTA :: uintptr(0x3333332F) // site + 5 + i32(0xCCCCCCCC) == site - MIRR
 REDIRECT_SIZE :: 5 // jmp rel32
 TRAMP_SIZE :: 32
 TRAMP_TARGET :: 24 // offset of the 8-byte target
-NEAR_WINDOW :: uintptr(0x3C00_0000) // 960MB
+BRANCH_REACH :: uintptr(0x7800_0000) // rel32 reach is 2GB
 
 mirror_ok:    bool
 mirror_start: uintptr
@@ -233,29 +233,6 @@ write_sites :: proc(unwritten: []rawptr) -> bool {
 	return true
 }
 
-alloc_near :: proc(size: int, commit := true) -> rawptr {
-	exe := exe_base()
-	step :: uintptr(0x0010_0000)
-	for distance := step; distance <= NEAR_WINDOW; distance += step {
-		if exe > distance {
-			if mem := page_alloc_at(exe - distance, size, commit); mem != nil {
-				return mem
-			}
-		}
-		if distance + uintptr(size) <= NEAR_WINDOW {
-			if mem := page_alloc_at(exe + distance, size, commit); mem != nil {
-				return mem
-			}
-		}
-	}
-	return nil
-}
-
 alloc_module :: proc(size: int) -> rawptr {
 	return alloc_near(size, commit = false)
-}
-
-is_near :: proc(addr: uintptr) -> bool {
-	LIMIT :: uintptr(0x4000_0000) // 1GB plus NEAR_WINDOW
-	return abs(int(addr) - int(exe_base())) < int(LIMIT)
 }

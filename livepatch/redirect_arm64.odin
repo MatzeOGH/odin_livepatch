@@ -7,6 +7,7 @@ import "core:slice"
 REDIRECT_SIZE :: 4
 
 BRANCH_REACH :: uintptr(126 << 20) // 128MB
+MODULE_REACH :: uintptr(2 << 30)
 VENEER_SIZE :: 8
 VENEERS_PER_BLOCK :: int(PAGE_SIZE) / VENEER_SIZE
 LDR_X16_TARGET :: u32(0x5800_0000) | u32(PAGE_SIZE / 4) << 5 | 16 // ldr x16, #PAGE_SIZE
@@ -17,10 +18,9 @@ tramp_used:  int
 
 mirror_init :: proc() {}
 
-near_range :: proc() -> (lo, hi: uintptr, ok: bool) {
-	size := exe_image_size()
-	if size >= BRANCH_REACH {
-		return
+alloc_module :: proc(size: int) -> rawptr {
+	return alloc_near(size, commit = false, reach = MODULE_REACH, from = BRANCH_REACH / 2)
+}
 	}
 	window := (BRANCH_REACH - size) / 2
 	lo = exe_base() > window ? exe_base() - window : 0
