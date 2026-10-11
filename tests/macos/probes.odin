@@ -224,3 +224,135 @@ probe_data_const_writable :: proc(t: ^testing.T) {
 	}
 	intrinsics.volatile_store(&runtime.type_table, intrinsics.volatile_load(&runtime.type_table))
 }
+
+MODULE_SOURCE :: `
+int counter = 41;
+const char *name = "probe";
+int module_entry(void) { return ++counter + (name[0] == 'p'); }
+`
+
+LC_SEGMENT_64          :: 0x19
+LC_MAIN                :: 0x80000028
+LC_DYLD_CHAINED_FIXUPS :: 0x80000034
+MH_MAGIC_64            :: 0xFEEDFACF
+MH_EXECUTE             :: 2
+
+Segment_Command_64 :: struct {
+	cmd, cmdsize:      u32,
+	segname:           [16]u8,
+	vmaddr, vmsize:    u64,
+	fileoff, filesize: u64,
+	maxprot, initprot: u32,
+	nsects, flags:     u32,
+}
+
+run_command :: proc(t: ^testing.T, command: []string) -> bool {
+	state, stdout, stderr, err := os.process_exec({command = command}, context.temp_allocator)
+	log.infof("%v -> exit %v %v\n%s%s", command, state.exit_code, err, stdout, stderr)
+	return testing.expect(t, err == nil && state.exit_code == 0, "the command succeeds")
+}
+
+// Links a module with ld64.lld and loads it. map
+// the segments at the link address, copy the file bytes, set the segment protections.
+@(test)
+probe_macho_module :: proc(t: ^testing.T) {
+	linker := "/opt/homebrew/opt/lld/bin/ld64.lld"
+	if !testing.expect(t, os.exists(linker), "ld64.lld is installed") {
+		return
+	}
+	dir := fmt.tprintf("/tmp/macos_probe_%d", posix.getpid())
+	if !testing.expect(t, os.make_directory(dir) == nil, "make the work directory") {
+		return
+	}
+	source := fmt.tprintf("%s/module.c", dir)
+	object := fmt.tprintf("%s/module.o", dir)
+	image := fmt.tprintf("%s/module.macho", dir)
+	if !testing.expect(t, os.write_entire_file(source, transmute([]u8)string(MODULE_SOURCE)) == nil, "write module.c") {
+		return
+	}
+	if !run_command(t, {"/usr/bin/cc", "-c", "-arch", "arm64", "-O1", "-fno-stack-protector", "-o", object, source}) {
+		return
+	}
+
+	// The base: free memory near the exe, as livepatch links each patch near it
+	MODULE_RESERVE :: 4 << 20
+	reserved := map_near_exe(MODULE_RESERVE)
+	if !testing.expect(t, reserved != nil, "free memory near the exe") {
+		return
+	}
+	base := uintptr(reserved)
+	posix.munmap(reserved, MODULE_RESERVE)
+	if !run_command(t, {linker, "-arch", "arm64", "-execute", "-e", "_module_entry",
+	                    "-pagezero_size", fmt.tprintf("0x%x", base),
+	                    "-platform_version", "macos", "11.0.0", "11.0.0",
+	                    "-o", image, object, "-no_fixup_chains"}) {
+		return
+	}
+
+	data, read_err := os.read_entire_file_from_path(image, context.temp_allocator)
+	if !testing.expect(t, read_err == nil && len(data) >= 32, "read the module") {
+		return
+	}
+	testing.expect_value(t, (^u32)(&data[0])^, MH_MAGIC_64)
+	testing.expect_value(t, (^u32)(&data[12])^, MH_EXECUTE)
+	command_count := (^u32)(&data[16])^
+
+	segments := make([dynamic]^Segment_Command_64, context.temp_allocator)
+	entry_offset := ~u64(0)
+	lo, hi := max(uintptr), uintptr(0)
+	offset := 32
+	for _ in 0 ..< command_count {
+		if !testing.expect(t, offset + 16 <= len(data), "the load commands are in the file") {
+			return
+		}
+		switch (^u32)(&data[offset])^ {
+		case LC_SEGMENT_64:
+			segment := (^Segment_Command_64)(&data[offset])
+			name := string(cstring(&segment.segname[0]))
+			log.infof("%-16s vm %x+%x file %x+%x prot %x", name, segment.vmaddr, segment.vmsize, segment.fileoff, segment.filesize, segment.initprot)
+			if segment.initprot != 0 { // not __PAGEZERO
+				append(&segments, segment)
+				lo = min(lo, mem.align_backward_uintptr(uintptr(segment.vmaddr), PAGE_SIZE))
+				hi = max(hi, mem.align_forward_uintptr(uintptr(segment.vmaddr + segment.vmsize), PAGE_SIZE))
+			}
+		case LC_MAIN:
+			entry_offset = (^u64)(&data[offset + 8])^
+		case LC_DYLD_CHAINED_FIXUPS:
+			testing.fail_now(t, "the linker wrote chained fixups despite -no_fixup_chains")
+		}
+		offset += int((^u32)(&data[offset + 4])^)
+	}
+	if !testing.expect_value(t, lo, base) || !testing.expect(t, entry_offset != ~u64(0), "the module has LC_MAIN") {
+		return
+	}
+
+	memory := posix.mmap(rawptr(lo), uint(hi - lo), {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS})
+	if !testing.expect(t, memory == rawptr(lo), "map the module at its link address") {
+		return
+	}
+	for segment in segments {
+		if !testing.expect(t, segment.fileoff + segment.filesize <= u64(len(data)), "the segment is in the file") {
+			return
+		}
+		copy(([^]u8)(uintptr(segment.vmaddr))[:segment.filesize], data[segment.fileoff:][:segment.filesize])
+	}
+	for segment in segments {
+		segment_lo := mem.align_backward_uintptr(uintptr(segment.vmaddr), PAGE_SIZE)
+		segment_hi := mem.align_forward_uintptr(uintptr(segment.vmaddr + segment.vmsize), PAGE_SIZE)
+		protection := transmute(posix.Prot_Flags)(i32(segment.initprot & 7))
+		if .EXEC in protection {
+			protection -= {.WRITE} // W^X
+		}
+		if !testing.expect(t, posix.mprotect(rawptr(segment_lo), uint(segment_hi - segment_lo), protection) == .OK, "mprotect a segment") {
+			return
+		}
+		if .EXEC in protection {
+			sys_icache_invalidate(rawptr(segment_lo), uint(segment_hi - segment_lo))
+		}
+	}
+
+	// LC_MAIN gives the entry as a file offset. __TEXT starts at file offset 0.
+	module_entry := (proc "c" () -> i32)(rawptr(base + uintptr(entry_offset)))
+	testing.expect_value(t, module_entry(), 43) // 42, + 1 for the name
+	testing.expect_value(t, module_entry(), 44) // the data segment is writable
+}
