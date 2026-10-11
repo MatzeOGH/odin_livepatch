@@ -48,12 +48,15 @@ when LIVEPATCH {
 	}
 
 	watch_change_affects_sources :: proc(name: string, extensions: []string) -> bool {
-		ext := filepath.ext(name)
-		if strings.equal_fold(ext, ".odin") {
+		ext := strings.trim_prefix(filepath.ext(name), ".")
+		if ext == "" {
+			return false
+		}
+		if strings.equal_fold(ext, "odin") {
 			return true
 		}
 		for extension in extensions {
-			if strings.equal_fold(ext, extension) {
+			if strings.equal_fold(ext, strings.trim_prefix(extension, ".")) {
 				return true
 			}
 		}
