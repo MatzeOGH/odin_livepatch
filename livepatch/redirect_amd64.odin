@@ -5,10 +5,16 @@ import "core:mem"
 import "core:slice"
 
 MIRROR_DELTA :: uintptr(0x3333332F) // site + 5 + i32(0xCCCCCCCC) == site - MIRROR_DELTA
-REDIRECT_SIZE :: 5 // jmp rel32
+REDIRECT_SIZE :: size_of(Jmp_Rel32)
 TRAMP_SIZE :: 32
 TRAMP_TARGET :: 24 // offset of the 8-byte target
 BRANCH_REACH :: uintptr(0x7800_0000) // rel32 reach is 2GB
+
+Jmp_Rel32 :: struct #packed { opcode: u8, rel: i32 }        // E9 rel32
+Jmp_Rip :: struct #packed { opcode: [2]u8, disp: i32 }      // FF 25 disp32
+Jmp_Abs :: struct #packed { jmp: Jmp_Rip, target: rawptr }  // jmp [rip+0], then the target
+Lea_Rsp_Imm8 :: struct #packed { opcode: [4]u8, imm: i8 }   // lea rsp, [rsp+imm8]
+Lea_Rsp_Imm32 :: struct #packed { opcode: [4]u8, imm: i32 } // lea rsp, [rsp+imm32]
 
 mirror_ok:    bool
 mirror_start: uintptr
@@ -148,11 +154,8 @@ place_stub :: proc(target, tramp: rawptr, variant: bool) -> bool {
 		write_jmp_rel32(target, tramp)
 		return true
 	}
-	// jmp [rip+0], then the 8-byte target.
-	commit_at(target_addr, 14) or_return
-	stub := ([^]u8)(target)
-	stub[0], stub[1], stub[2], stub[3], stub[4], stub[5] = 0xFF, 0x25, 0, 0, 0, 0
-	(^u64)(rawptr(target_addr + 6))^ = u64(uintptr(tramp))
+	commit_at(target_addr, size_of(Jmp_Abs)) or_return
+	(^Jmp_Abs)(target)^ = {{{0xFF, 0x25}, 0}, tramp}
 	return true
 }
 
@@ -174,16 +177,14 @@ alloc_tramp :: proc(undo := 0) -> (tramp: rawptr, ok: bool) {
 	code := ([^]u8)(tramp)
 	lea_size := tramp_lea_size(undo)
 	switch lea_size {
-	case 5:
-		code[0], code[1], code[2], code[3], code[4] = 0x48, 0x8D, 0x64, 0x24, u8(undo) // lea rsp, [rsp+imm8]
-	case 8:
-		code[0], code[1], code[2], code[3] = 0x48, 0x8D, 0xA4, 0x24 // lea rsp, [rsp+imm32]
-		(^i32)(&code[4])^ = i32(undo)
+	case size_of(Lea_Rsp_Imm8):
+		(^Lea_Rsp_Imm8)(tramp)^ = {{0x48, 0x8D, 0x64, 0x24}, i8(undo)}
+	case size_of(Lea_Rsp_Imm32):
+		(^Lea_Rsp_Imm32)(tramp)^ = {{0x48, 0x8D, 0xA4, 0x24}, i32(undo)}
 	}
-	// jmp [rip+rel] to TRAMP_TARGET
-	code[lea_size], code[lea_size + 1] = 0xFF, 0x25
-	(^i32)(&code[lea_size + 2])^ = i32(TRAMP_TARGET - (lea_size + 6))
-	slice.fill(code[lea_size + 6:TRAMP_TARGET], 0xCC)
+	jmp_end := lea_size + size_of(Jmp_Rip)
+	(^Jmp_Rip)(&code[lea_size])^ = {{0xFF, 0x25}, i32(TRAMP_TARGET - jmp_end)}
+	slice.fill(code[jmp_end:TRAMP_TARGET], 0xCC)
 	(^u64)(rawptr(uintptr(tramp) + TRAMP_TARGET))^ = 0
 	return tramp, true
 }
@@ -193,9 +194,9 @@ tramp_lea_size :: proc(undo: int) -> int {
 	case undo == 0:
 		return 0
 	case undo < 0x80:
-		return 5
+		return size_of(Lea_Rsp_Imm8)
 	}
-	return 8
+	return size_of(Lea_Rsp_Imm32)
 }
 
 write_tramp_target :: proc "contextless" (tramp, body: rawptr) {
@@ -204,17 +205,15 @@ write_tramp_target :: proc "contextless" (tramp, body: rawptr) {
 
 write_site_bytes :: proc "contextless" (redirect_site: Redirect_Site) {
 	if mirror_ok {
-		code := ([^]u8)(redirect_site.site)
-		code[0], code[1], code[2], code[3], code[4] = 0xE9, 0xCC, 0xCC, 0xCC, 0xCC
+		(^Jmp_Rel32)(redirect_site.site)^ = {0xE9, transmute(i32)[4]u8{0xCC, 0xCC, 0xCC, 0xCC}}
 	} else {
 		write_jmp_rel32(redirect_site.site, redirect_site.tramp)
 	}
 }
 
 write_jmp_rel32 :: proc "contextless" (site, target: rawptr) {
-	rel32 := i32(i64(uintptr(target)) - (i64(uintptr(site)) + 5))
-	(^u8)(site)^ = 0xE9
-	(^i32)(rawptr(uintptr(site) + 1))^ = rel32
+	rel32 := i32(i64(uintptr(target)) - (i64(uintptr(site)) + size_of(Jmp_Rel32)))
+	(^Jmp_Rel32)(site)^ = {0xE9, rel32}
 }
 
 near_symbol_start :: proc(addr: uintptr) -> bool {
