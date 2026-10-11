@@ -172,3 +172,55 @@ probe_suspend_pc :: proc(t: ^testing.T) {
 	testing.expect(t, state.pc >= entry && state.pc < entry + 256, "the pc is in spin")
 }
 
+@(thread_local)
+tl_var: int
+
+tlv_address :: proc() -> rawptr {
+	Descriptor :: struct {
+		thunk:  proc "c" (descriptor: ^Descriptor) -> rawptr,
+		key:    uint,
+		offset: uint,
+	}
+	size: uint
+	section := ([^]Descriptor)(getsectiondata(_dyld_get_image_header(0), "__DATA", "__thread_vars", &size))
+	for &descriptor in section[:size / size_of(Descriptor)] {
+		if address := descriptor.thunk(&descriptor); address == &tl_var {
+			return address
+		}
+	}
+	return nil
+}
+
+@(test)
+probe_tlv :: proc(t: ^testing.T) {
+	main_address := tlv_address()
+	testing.expect_value(t, main_address, rawptr(&tl_var))
+
+	@(static) worker_ok: bool
+	@(static) worker_address: rawptr
+	worker := thread.create_and_start(proc() {
+		worker_address = tlv_address()
+		worker_ok = worker_address == &tl_var
+	})
+	thread.join(worker)
+	thread.destroy(worker)
+	log.infof("tl_var: main %p, worker %p", main_address, worker_address)
+	testing.expect(t, worker_ok, "the descriptor gives the worker's own tl_var")
+	testing.expect(t, worker_address != main_address, "each thread has its own tl_var")
+}
+
+// make_exe_writable makes the page of runtime.type_table writable, so a patch can set a new
+// type table. The page is in __DATA_CONST, which dyld makes read-only after startup.
+@(test)
+probe_data_const_writable :: proc(t: ^testing.T) {
+	address := uintptr(&runtime.type_table)
+	page := address &~ (PAGE_SIZE - 1)
+	size: uint
+	section := uintptr(getsectiondata(_dyld_get_image_header(0), "__DATA_CONST", "__const", &size))
+	log.infof("type_table at %x, __DATA_CONST,__const at %x size %x", address, section, size)
+	result := posix.mprotect(rawptr(page), uint(PAGE_SIZE), {.READ, .WRITE})
+	if !testing.expectf(t, result == .OK, "mprotect RW of the type_table page: %v", posix.errno()) {
+		return
+	}
+	intrinsics.volatile_store(&runtime.type_table, intrinsics.volatile_load(&runtime.type_table))
+}
