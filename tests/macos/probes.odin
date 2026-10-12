@@ -225,6 +225,78 @@ probe_data_const_writable :: proc(t: ^testing.T) {
 	intrinsics.volatile_store(&runtime.type_table, intrinsics.volatile_load(&runtime.type_table))
 }
 
+LC_BUILD_VERSION      :: 0x32
+LC_VERSION_MIN_MACOSX :: 0x24
+PLATFORM_MACOS        :: 1
+MACOS_11              :: u32(11 << 16)
+
+// Finds LC_BUILD_VERSION in a Mach-O header and its load commands. livepatch reads minos from it
+// with no fallback, so each Odin exe must have it.
+build_version :: proc(t: ^testing.T, data: []u8) -> (minos: u32, ok: bool) {
+	if !testing.expect(t, len(data) >= 32 && (^u32)(&data[0])^ == MH_MAGIC_64, "a 64-bit Mach-O header") {
+		return
+	}
+	command_count := (^u32)(&data[16])^
+	offset := 32
+	for _ in 0 ..< command_count {
+		if !testing.expect(t, offset + 16 <= len(data), "the load commands are in the data") {
+			return
+		}
+		switch (^u32)(&data[offset])^ {
+		case LC_VERSION_MIN_MACOSX:
+			testing.fail_now(t, "the exe has LC_VERSION_MIN_MACOSX")
+		case LC_BUILD_VERSION:
+			platform := (^u32)(&data[offset + 8])^
+			minos = (^u32)(&data[offset + 12])^
+			log.infof("LC_BUILD_VERSION: platform %d, minos %d.%d.%d", platform, minos >> 16, (minos >> 8) & 0xFF, minos & 0xFF)
+			testing.expect_value(t, platform, u32(PLATFORM_MACOS))
+			ok = true
+		}
+		offset += int((^u32)(&data[offset + 4])^)
+	}
+	testing.expect(t, ok, "the exe has LC_BUILD_VERSION")
+	return
+}
+
+// The running test exe, as Odin builds it by default
+@(test)
+probe_exe_build_version :: proc(t: ^testing.T) {
+	header := ([^]u8)(_dyld_get_image_header(0))
+	commands_size := (^u32)(&header[20])^
+	if minos, ok := build_version(t, header[:32 + commands_size]); ok {
+		testing.expect_value(t, minos, MACOS_11)
+	}
+}
+
+// A minimum below 11.0 is not possible on arm64: the toolchain raises it to 11.0. A higher one is kept.
+@(test)
+probe_exe_build_version_flag :: proc(t: ^testing.T) {
+	dir := fmt.tprintf("/tmp/macos_probe_minos_%d", posix.getpid())
+	if !testing.expect(t, os.make_directory(dir) == nil, "make the work directory") {
+		return
+	}
+	source := fmt.tprintf("%s/main.odin", dir)
+	if !testing.expect(t, os.write_entire_file(source, transmute([]u8)string("package main\nmain :: proc() {}\n")) == nil, "write main.odin") {
+		return
+	}
+	cases := [?]struct{flag: string, minos: u32}{{"10.15", MACOS_11}, {"14.0", 14 << 16}}
+	for c in cases {
+		exe := fmt.tprintf("%s/main_%s", dir, c.flag)
+		// env searches the PATH for odin
+		if !run_command(t, {"/usr/bin/env", "odin", "build", dir, fmt.tprintf("-out:%s", exe),
+		                    fmt.tprintf("-minimum-os-version:%s", c.flag)}) {
+			continue
+		}
+		data, read_err := os.read_entire_file_from_path(exe, context.temp_allocator)
+		if !testing.expect(t, read_err == nil, "read the exe") {
+			continue
+		}
+		if minos, ok := build_version(t, data); ok {
+			testing.expectf(t, minos == c.minos, "-minimum-os-version:%s gives minos %x, expected %x", c.flag, minos, c.minos)
+		}
+	}
+}
+
 MODULE_SOURCE :: `
 int counter = 41;
 const char *name = "probe";
