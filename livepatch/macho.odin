@@ -88,15 +88,6 @@ Linkedit_Data_Command :: struct #packed {
 	datasize: u32,
 }
 
-Build_Version_Command :: struct #packed {
-	cmd:      u32,
-	cmdsize:  u32,
-	platform: u32,
-	minos:    u32, // X.Y.Z as xxxx.yy.zz nibbles
-	sdk:      u32,
-	ntools:   u32,
-}
-
 Nlist_64 :: struct #packed {
 	n_strx:  u32,
 	n_type:  u8,
@@ -126,11 +117,8 @@ CPU_TYPE_ARM64 :: 0x0100_000C
 LC_SEGMENT_64                 :: 0x19
 LC_SYMTAB                     :: 0x2
 LC_DYSYMTAB                   :: 0xB
-LC_BUILD_VERSION              :: 0x32
 LC_LINKER_OPTIMIZATION_HINT   :: 0x2E
 LC_DYLD_CHAINED_FIXUPS        :: 0x8000_0034
-
-PLATFORM_MACOS :: 1
 
 // n_type
 N_STAB :: 0xE0
@@ -179,7 +167,6 @@ Macho_View :: struct {
 	sections:   [dynamic]^Section_64, // in file order: n_sect N is sections[N - 1]
 	symtab:     ^Symtab_Command,
 	dysymtab:   ^Dysymtab_Command,
-	build:      ^Build_Version_Command,
 	loh:        ^Linkedit_Data_Command,
 	syms:       []Nlist_64,
 	strtab:     []u8,
@@ -228,8 +215,6 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view:
 			view.symtab = (^Symtab_Command)(command)
 		case LC_DYSYMTAB:
 			view.dysymtab = (^Dysymtab_Command)(command)
-		case LC_BUILD_VERSION:
-			view.build = (^Build_Version_Command)(command)
 		case LC_LINKER_OPTIMIZATION_HINT:
 			view.loh = (^Linkedit_Data_Command)(command)
 		case LC_DYLD_CHAINED_FIXUPS:

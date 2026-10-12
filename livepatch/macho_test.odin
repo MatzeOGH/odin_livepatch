@@ -206,10 +206,6 @@ log_view :: proc(view: Macho_View) {
 			dysymtab.ilocalsym, dysymtab.nlocalsym, dysymtab.iextdefsym, dysymtab.nextdefsym,
 			dysymtab.iundefsym, dysymtab.nundefsym, dysymtab.nindirectsyms)
 	}
-	if build := view.build; build != nil {
-		log.infof("  LC_BUILD_VERSION: platform=%d minos=%d.%d.%d sdk=%d.%d.%d", build.platform,
-			build.minos >> 16, (build.minos >> 8) & 0xFF, build.minos & 0xFF, build.sdk >> 16, (build.sdk >> 8) & 0xFF, build.sdk & 0xFF)
-	}
 	MAX_LOGGED :: 40
 	for sym, index in view.syms {
 		if index == MAX_LOGGED {
