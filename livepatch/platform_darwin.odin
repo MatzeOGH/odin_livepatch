@@ -83,7 +83,7 @@ find_linker :: proc() -> (path: string, ok: bool) {
 	}
 	path, ok = find_ld64_lld()
 	if ok {
-		found_linker = strings.clone(path, runtime.heap_allocator())
+		found_linker = strings.clone(path)
 	}
 	return found_linker, ok
 }
