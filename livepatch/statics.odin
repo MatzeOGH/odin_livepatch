@@ -208,7 +208,7 @@ static_keys_make :: proc(names: []string) -> Static_Keys {
 			key = fmt.tprintf("%s#%d/%d", local_name(&locals, group, &segments), rank_of(offsets, offset), len(offsets))
 		}
 		if key = private_files_strip(files, key); key != name {
-			keys[name] = strings.clone(key, context.temp_allocator)
+			keys[name] = key
 		}
 	}
 	return keys

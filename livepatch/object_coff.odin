@@ -2,6 +2,7 @@
 package livepatch
 
 import pe "core:debug/pe"
+import "core:mem"
 import "core:slice"
 import "core:strings"
 
@@ -90,9 +91,22 @@ needs_near_address :: proc(refs: Near_References, name: string) -> bool {
 absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	cell_count := len(merged.debug_cells)
 	symbol_count := len(merged.aliases) + len(merged.call_aliases) + len(merged.externals) + cell_count
-	string_table := make([dynamic]u8, context.temp_allocator)
-	append(&string_table, 0, 0, 0, 0) // the size, set below
-	symbols := make([dynamic]Coff_Symbol, 0, symbol_count, context.temp_allocator)
+	strtab_size := 4
+	for _, alias in merged.aliases      do strtab_size += len(alias) + 1
+	for _, alias in merged.call_aliases do strtab_size += len(alias) + 1
+	for name in merged.externals        do strtab_size += len(name) + 1
+	for name in merged.debug_cells      do strtab_size += len(name) + 1
+
+	section_count := cell_count > 0 ? 1 : 0
+	cells_offset := FILE_HDR_SIZE + section_count * SECTION_HDR_SIZE
+	symtab_offset := cells_offset + cell_count * 8
+	strtab_offset := symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE
+	out := make([]byte, strtab_offset + strtab_size, context.temp_allocator)
+
+	symbols := slice.into_dynamic(slice.reinterpret([]Coff_Symbol, out[symtab_offset:strtab_offset]))
+	string_table := slice.into_dynamic(out[strtab_offset:])
+	append(&string_table, 0, 0, 0, 0)
+
 	add_absolute_symbol :: proc(symbols: ^[dynamic]Coff_Symbol, string_table: ^[dynamic]u8, name: string, addr: rawptr, section := i16le(pe.IMAGE_SYM_ABSOLUTE)) {
 		symbol := Coff_Symbol{value = u32le(uintptr(addr)), section_number = section, storage_class = .EXTERNAL}
 		(^u32le)(&symbol.name[4])^ = u32le(len(string_table))
@@ -100,6 +114,7 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 		append(string_table, 0)
 		append(symbols, symbol)
 	}
+
 	for name, alias in merged.aliases {
 		add_absolute_symbol(&symbols, &string_table, alias, merged.defs[name])
 	}
@@ -109,18 +124,16 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	for name, addr in merged.externals {
 		add_absolute_symbol(&symbols, &string_table, name, addr)
 	}
-	// Each cell symbol is in section 1, at the offset of its cell
-	cells := make([dynamic]u64le, 0, cell_count, context.temp_allocator)
-	for name, addr in merged.debug_cells {
-		add_absolute_symbol(&symbols, &string_table, name, rawptr(uintptr(len(cells) * 8)), section = 1)
-		append(&cells, u64le(uintptr(addr)))
-	}
-	(^u32le)(raw_data(string_table[:]))^ = u32le(len(string_table))
 
-	section_count := cell_count > 0 ? 1 : 0
-	cells_offset := FILE_HDR_SIZE + section_count * SECTION_HDR_SIZE
-	symtab_offset := cells_offset + cell_count * 8
-	out := make([]byte, symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE + len(string_table), context.temp_allocator)
+	cells := slice.into_dynamic(out[cells_offset:symtab_offset])
+	for name, addr in merged.debug_cells {
+		add_absolute_symbol(&symbols, &string_table, name, rawptr(uintptr(len(cells))), section = 1)
+		cell := u64le(uintptr(addr))
+		append(&cells, ..mem.ptr_to_bytes(&cell)) // bytes: cells_offset is not 8-aligned
+	}
+	(^u32le)(raw_data(string_table[:]))^ = u32le(strtab_size)
+	assert(len(symbols) == symbol_count && len(string_table) == strtab_size)
+
 	file_header := (^pe.File_Header)(raw_data(out))
 	file_header.machine = .AMD64
 	file_header.number_of_sections = u16le(section_count)
@@ -132,10 +145,7 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 		section.size_of_raw_data = u32le(cell_count * 8)
 		section.pointer_to_raw_data = u32le(cells_offset)
 		section.characteristics = .CNT_INITIALIZED_DATA | .MEM_READ | .ALIGN_8BYTES
-		copy(out[cells_offset:], slice.to_bytes(cells[:]))
 	}
-	copy(out[symtab_offset:], slice.to_bytes(symbols[:]))
-	copy(out[symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE:], string_table[:])
 	return out
 }
 

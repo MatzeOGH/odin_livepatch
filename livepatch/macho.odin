@@ -118,7 +118,6 @@ LC_SEGMENT_64                 :: 0x19
 LC_SYMTAB                     :: 0x2
 LC_DYSYMTAB                   :: 0xB
 LC_LINKER_OPTIMIZATION_HINT   :: 0x2E
-LC_DYLD_CHAINED_FIXUPS        :: 0x8000_0034
 
 // n_type
 N_STAB :: 0xE0
@@ -170,7 +169,6 @@ Macho_View :: struct {
 	loh:        ^Linkedit_Data_Command,
 	syms:       []Nlist_64,
 	strtab:     []u8,
-	chained_fixups: bool, // pointers that only dyld can decode
 }
 
 macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view: Macho_View, ok: bool) {
@@ -217,8 +215,6 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view:
 			view.dysymtab = (^Dysymtab_Command)(command)
 		case LC_LINKER_OPTIMIZATION_HINT:
 			view.loh = (^Linkedit_Data_Command)(command)
-		case LC_DYLD_CHAINED_FIXUPS:
-			view.chained_fixups = true
 		}
 		offset += int(command.cmdsize)
 	}

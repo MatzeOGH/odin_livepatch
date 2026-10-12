@@ -279,10 +279,23 @@ thread_pointer_offset :: proc(rewrite: ^Elf_Rewrite, symbol_index: int, offset_i
 }
 
 absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
-	string_table := make([dynamic]u8, context.temp_allocator)
-	append(&string_table, "\x00.strtab\x00.symtab\x00")
-	symbols := make([dynamic]Elf64_Sym, 0, 1 + len(merged.aliases) + len(merged.call_aliases) + len(merged.externals), context.temp_allocator)
+	SECTION_NAMES :: "\x00.strtab\x00.symtab\x00"
+	n_symbols := 1 + len(merged.aliases) + len(merged.call_aliases) + len(merged.externals)
+	strtab_size := len(SECTION_NAMES)
+	for _, alias in merged.aliases      do strtab_size += len(alias) + 1
+	for _, alias in merged.call_aliases do strtab_size += len(alias) + 1
+	for name in merged.externals        do strtab_size += len(name) + 1
+
+	symtab_offset := size_of(Elf64_Ehdr)
+	strtab_offset := symtab_offset + n_symbols * size_of(Elf64_Sym)
+	section_headers_offset := mem.align_forward_int(strtab_offset + strtab_size, 8)
+	out := make([]byte, section_headers_offset + 3 * size_of(Elf64_Shdr), context.temp_allocator)
+
+	symbols := slice.into_dynamic(slice.reinterpret([]Elf64_Sym, out[symtab_offset:strtab_offset]))
+	string_table := slice.into_dynamic(out[strtab_offset:][:strtab_size])
+	append(&string_table, SECTION_NAMES)
 	append(&symbols, Elf64_Sym{})
+
 	add_absolute_symbol :: proc(symbols: ^[dynamic]Elf64_Sym, string_table: ^[dynamic]u8, name: string, addr: rawptr) {
 		append(symbols, Elf64_Sym{
 			name  = u32(len(string_table)),
@@ -293,6 +306,7 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 		append(string_table, name)
 		append(string_table, 0)
 	}
+
 	for key, alias in merged.aliases {
 		add_absolute_symbol(&symbols, &string_table, alias, merged.defs[key])
 	}
@@ -302,11 +316,8 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	for name, addr in merged.externals {
 		add_absolute_symbol(&symbols, &string_table, name, addr)
 	}
+	assert(len(symbols) == n_symbols && len(string_table) == strtab_size)
 
-	symtab_offset := size_of(Elf64_Ehdr)
-	strtab_offset := symtab_offset + len(symbols) * size_of(Elf64_Sym)
-	section_headers_offset := mem.align_forward_int(strtab_offset + len(string_table), 8)
-	out := make([]byte, section_headers_offset + 3 * size_of(Elf64_Shdr), context.temp_allocator)
 	header := (^Elf64_Ehdr)(raw_data(out))
 	header.ident = {0x7F, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	header.type = ET_REL
@@ -317,8 +328,6 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	header.shentsize = size_of(Elf64_Shdr)
 	header.shnum = 3
 	header.shstrndx = 1
-	copy(out[symtab_offset:], slice.to_bytes(symbols[:]))
-	copy(out[strtab_offset:], string_table[:])
 	sections := slice.reinterpret([]Elf64_Shdr, out[section_headers_offset:][:3 * size_of(Elf64_Shdr)])
 	sections[1] = {name = 1, type = SHT_STRTAB, offset = u64(strtab_offset), size = u64(len(string_table)), addralign = 1}
 	sections[2] = {name = 9, type = SHT_SYMTAB, offset = u64(symtab_offset), size = u64(len(symbols) * size_of(Elf64_Sym)),
