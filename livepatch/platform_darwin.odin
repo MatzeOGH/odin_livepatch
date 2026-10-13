@@ -32,17 +32,17 @@ RTLD_DEFAULT :: posix.Symbol_Table(~uintptr(1)) // (void *)-2
 
 exe_view:  Macho_View
 exe_slide: uintptr
-exe_lo:    uintptr // without __PAGEZERO
-exe_hi:    uintptr
+exe_start: uintptr // without __PAGEZERO
+exe_end:   uintptr
 
 exe_probe: u8
 
 exe_base :: proc "contextless" () -> uintptr {
-	return exe_lo
+	return exe_start
 }
 
 exe_image_size :: proc "contextless" () -> uintptr {
-	return exe_hi - exe_lo
+	return exe_end - exe_start
 }
 mapped_sizes: map[uintptr]int
 alloc_error:  os.Error

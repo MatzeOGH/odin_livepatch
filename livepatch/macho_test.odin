@@ -27,7 +27,7 @@ test_macho_exe :: proc(t: ^testing.T) {
 	testing.expect_value(t, read_err, nil)
 	log.infof("exe: %s, %d bytes", exe_path, len(data))
 
-	view, ok := macho_parse(data)
+	view, ok := parse_macho(data)
 	testing.expect(t, ok, "the exe parses")
 	if !ok {
 		return
@@ -81,7 +81,7 @@ test_macho_exe :: proc(t: ^testing.T) {
 
 	expect_address(t, symbols.symbols, "livepatch::test_probe", uintptr(&test_probe))
 	expect_address(t, symbols.symbols, "livepatch::test_macho_exe", uintptr(rawptr(test_macho_exe)))
-	expect_address(t, symbols.symbols, "livepatch::macho_parse", uintptr(rawptr(macho_parse)))
+	expect_address(t, symbols.symbols, "livepatch::parse_macho", uintptr(rawptr(parse_macho)))
 
 	instances := 0
 	testing.expect_value(t, test_generic(1), 2)
@@ -123,8 +123,8 @@ test_macho_exe :: proc(t: ^testing.T) {
 	addresses := make(map[string]uintptr, context.temp_allocator)
 	ambiguous := make(map[string]int, context.temp_allocator)
 	for sym in view.syms {
-		raw := macho_raw_name(view, sym)
-		if macho_symbol_section(view, sym) == nil || macho_is_temporary(raw) {
+		raw_name := macho_raw_name(view, sym)
+		if macho_symbol_section(view, sym) == nil || macho_is_temporary(raw_name) {
 			continue
 		}
 		name := macho_symbol_name(view, sym)
@@ -155,31 +155,31 @@ test_macho_exe :: proc(t: ^testing.T) {
 
 @(test)
 test_macho_rejects :: proc(t: ^testing.T) {
-	_, short_ok := macho_parse([]byte{0xCF, 0xFA})
+	_, short_ok := parse_macho([]byte{0xCF, 0xFA})
 	log.infof("2 bytes: parsed=%v", short_ok)
 	testing.expect(t, !short_ok, "refuses data shorter than a header")
 
 	header := Mach_Header_64{magic = MH_MAGIC_64, cputype = 0x0100_0007} // x86-64
-	_, x64_ok := macho_parse(([^]byte)(&header)[:size_of(header)])
+	_, x64_ok := parse_macho(([^]byte)(&header)[:size_of(header)])
 	log.infof("x86-64 header: parsed=%v", x64_ok)
 	testing.expect(t, !x64_ok, "refuses x86-64")
 
 	header.cputype = CPU_TYPE_ARM64
 	header.magic = 0xFEED_FACE // 32-bit
-	_, magic_ok := macho_parse(([^]byte)(&header)[:size_of(header)])
+	_, magic_ok := parse_macho(([^]byte)(&header)[:size_of(header)])
 	log.infof("32-bit magic: parsed=%v", magic_ok)
 	testing.expect(t, !magic_ok, "refuses a 32-bit Mach-O")
 
 	header.magic = MH_MAGIC_64
 	header.ncmds = 1
 	header.sizeofcmds = 1 << 20 // past the end of the data
-	_, bad_ok := macho_parse(([^]byte)(&header)[:size_of(header)])
+	_, bad_ok := parse_macho(([^]byte)(&header)[:size_of(header)])
 	log.infof("load commands past the end: parsed=%v", bad_ok)
 	testing.expect(t, !bad_ok, "refuses load commands past the end")
 
 	header.ncmds = 0
 	header.sizeofcmds = 0
-	empty, empty_ok := macho_parse(([^]byte)(&header)[:size_of(header)])
+	empty, empty_ok := parse_macho(([^]byte)(&header)[:size_of(header)])
 	log.infof("header with no load commands: parsed=%v segments=%d sections=%d", empty_ok, len(empty.segments), len(empty.sections))
 	testing.expect(t, empty_ok, "accepts a header with no load commands")
 }

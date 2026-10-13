@@ -75,8 +75,8 @@ got_cell_for :: proc(key: string, addr: rawptr) -> rawptr {
 }
 
 site_word :: proc "contextless" (redirect_site: Redirect_Site) -> u32 {
-	rel := i64(uintptr(redirect_site.tramp)) - i64(uintptr(redirect_site.site))
-	return transmute(u32)Branch{imm26 = i32(rel >> 2), op = 0b000101}
+	distance := i64(uintptr(redirect_site.tramp)) - i64(uintptr(redirect_site.site))
+	return transmute(u32)Branch{imm26 = i32(distance >> 2), op = 0b000101}
 }
 
 write_sites :: proc(unwritten: []rawptr) -> bool {
@@ -84,15 +84,15 @@ write_sites :: proc(unwritten: []rawptr) -> bool {
 	slice.sort(unwritten) // the key is the site
 	for len(unwritten) > 0 {
 		page := mem.align_backward_uintptr(uintptr(unwritten[0]), PAGE_SIZE)
-		n := 1
-		for n < len(unwritten) && mem.align_backward_uintptr(uintptr(unwritten[n]), PAGE_SIZE) == page {
-			n += 1
+		page_sites := 1
+		for page_sites < len(unwritten) && mem.align_backward_uintptr(uintptr(unwritten[page_sites]), PAGE_SIZE) == page {
+			page_sites += 1
 		}
-		replace_code_page(page, unwritten[:n]) or_return
-		for key in unwritten[:n] {
+		replace_code_page(page, unwritten[:page_sites]) or_return
+		for key in unwritten[:page_sites] {
 			(&sites[key]).written = true
 		}
-		unwritten = unwritten[n:]
+		unwritten = unwritten[page_sites:]
 	}
 	return true
 }

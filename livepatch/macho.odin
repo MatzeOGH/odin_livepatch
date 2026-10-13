@@ -161,17 +161,17 @@ ARM64_RELOC_TLVP_LOAD_PAGEOFF12 :: 9
 ARM64_RELOC_ADDEND              :: 10
 
 Macho_View :: struct {
-	header:     ^Mach_Header_64,
-	segments:   [dynamic]^Segment_Command_64,
-	sections:   [dynamic]^Section_64, // in file order: n_sect N is sections[N - 1]
-	symtab:     ^Symtab_Command,
-	dysymtab:   ^Dysymtab_Command,
-	loh:        ^Linkedit_Data_Command,
-	syms:       []Nlist_64,
-	strtab:     []u8,
+	header:             ^Mach_Header_64,
+	segments:           [dynamic]^Segment_Command_64,
+	sections:           [dynamic]^Section_64, // in file order: n_sect N is sections[N - 1]
+	symtab:             ^Symtab_Command,
+	dysymtab:           ^Dysymtab_Command,
+	optimization_hints: ^Linkedit_Data_Command,
+	syms:               []Nlist_64,
+	strtab:             []u8,
 }
 
-macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view: Macho_View, ok: bool) {
+parse_macho :: proc(data: []byte, allocator := context.temp_allocator) -> (view: Macho_View, ok: bool) {
 	if len(data) < size_of(Mach_Header_64) {
 		return
 	}
@@ -214,7 +214,7 @@ macho_parse :: proc(data: []byte, allocator := context.temp_allocator) -> (view:
 		case LC_DYSYMTAB:
 			view.dysymtab = (^Dysymtab_Command)(command)
 		case LC_LINKER_OPTIMIZATION_HINT:
-			view.loh = (^Linkedit_Data_Command)(command)
+			view.optimization_hints = (^Linkedit_Data_Command)(command)
 		}
 		offset += int(command.cmdsize)
 	}
@@ -244,8 +244,8 @@ macho_symbol_name :: proc(view: Macho_View, sym: Nlist_64) -> string {
 	return strings.trim_prefix(macho_raw_name(view, sym), "_")
 }
 
-macho_is_temporary :: proc(raw: string) -> bool {
-	return !strings.has_prefix(raw, "_")
+macho_is_temporary :: proc(raw_name: string) -> bool {
+	return !strings.has_prefix(raw_name, "_")
 }
 
 macho_symbol_section :: proc(view: Macho_View, sym: Nlist_64) -> ^Section_64 {
@@ -307,16 +307,16 @@ read_macho_symbols :: proc(view: Macho_View, slide: uintptr, stable_keys := true
 		if macho_symbol_section(view, sym) == nil {
 			continue
 		}
-		raw := macho_raw_name(view, sym)
-		if raw == "" {
+		raw_name := macho_raw_name(view, sym)
+		if raw_name == "" {
 			continue
 		}
 		live := slide + uintptr(sym.n_value)
 		append(&out.starts, live)
-		if macho_is_temporary(raw) {
+		if macho_is_temporary(raw_name) {
 			continue
 		}
-		index_add(&out.symbols, &ambiguous, data_key(keys, raw[1:]), live, allocator)
+		index_add(&out.symbols, &ambiguous, data_key(keys, raw_name[1:]), live, allocator)
 	}
 	return
 }
