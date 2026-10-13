@@ -10,11 +10,11 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 	data := object.data
 	view := object.view
 
-	if view.strtab_offset + 4 > len(data) {
+	if view.string_table_offset + 4 > len(data) {
 		return nil, "<string table>"
 	}
-	strtab_size := int((^u32)(raw_data(data[view.strtab_offset:]))^)
-	if view.strtab_offset + strtab_size != len(data) {
+	string_table_size := int((^u32)(raw_data(data[view.string_table_offset:]))^)
+	if view.string_table_offset + string_table_size != len(data) {
 		return nil, "<string table not at end of object>"
 	}
 
@@ -22,26 +22,26 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 	retarget := make(map[int]u32, context.temp_allocator) // symbol index -> index of its `lp$N`
 	callable := make(map[int]string, context.temp_allocator) // symbol index -> link name, for a symbol that can get an `lp$cN`
 	call_retarget := make(map[int]u32, context.temp_allocator) // symbol index -> index of its `lp$cN`
-	added_syms := make([dynamic]Coff_Symbol, context.temp_allocator)
+	added_symbols := make([dynamic]Coff_Symbol, context.temp_allocator)
 	added_strings := make([dynamic]u8, context.temp_allocator)
-	set_long_name :: proc(symbol: ^Coff_Symbol, name: string, added_strings: ^[dynamic]u8, strtab_size: int) {
+	set_long_name :: proc(symbol: ^Coff_Symbol, name: string, added_strings: ^[dynamic]u8, string_table_size: int) {
 		symbol.name = {}
-		(^u32le)(&symbol.name[4])^ = u32le(strtab_size + len(added_strings))
+		(^u32le)(&symbol.name[4])^ = u32le(string_table_size + len(added_strings))
 		append(added_strings, name)
 		append(added_strings, 0)
 	}
 
-	add_external :: proc(name: string, view: Coff_View, added_syms: ^[dynamic]Coff_Symbol, added_strings: ^[dynamic]u8, strtab_size: int) -> u32 {
+	add_external :: proc(name: string, view: Coff_View, added_symbols: ^[dynamic]Coff_Symbol, added_strings: ^[dynamic]u8, string_table_size: int) -> u32 {
 		symbol := Coff_Symbol{storage_class = .EXTERNAL}
-		set_long_name(&symbol, name, added_strings, strtab_size)
-		append(added_syms, symbol)
-		return u32(view.symbol_count + len(added_syms) - 1)
+		set_long_name(&symbol, name, added_strings, string_table_size)
+		append(added_symbols, symbol)
+		return u32(view.symbol_count + len(added_symbols) - 1)
 	}
 
 	cursor := 0
 
-	for symbol, symbol_index in next_coff_symbol(data, view.symtab_offset, view.symbol_count, &cursor) {
-		name := coff_symbol_name(symbol, data, view.strtab_offset)
+	for symbol, symbol_index in next_coff_symbol(data, view.symbol_table_offset, view.symbol_count, &cursor) {
+		name := coff_symbol_name(symbol, data, view.string_table_offset)
 		section_number := coff_symbol_section(symbol)
 
 		if section_number == pe.IMAGE_SYM_UNDEFINED {
@@ -50,21 +50,21 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 			}
 		}
 
-		addr := merged.defs[name] or_continue
+		address := merged.defs[name] or_continue
 		if section_number > view.section_count {
 			return nil, name
 		}
 
 		if section_number > 0 {
 			section := coff_section_header(data, view.section_headers_offset, section_number - 1)
-			if is_object_local(symbol, name, object_section_name(section, data, view.strtab_offset)) {
+			if is_object_local(symbol, name, object_section_name(section, data, view.string_table_offset)) {
 				continue
 			}
 			if section.characteristics & (.MEM_EXECUTE | .LNK_COMDAT) == {} {
 				// Data: the definition becomes the undefined `lp$N`.
-				live[symbol_index] = uintptr(addr)
+				live[symbol_index] = uintptr(address)
 				retarget[symbol_index] = u32(symbol_index)
-				set_long_name(symbol, alias_in(&merged.aliases, "lp$", name), &added_strings, strtab_size)
+				set_long_name(symbol, alias_in(&merged.aliases, "lp$", name), &added_strings, string_table_size)
 				symbol.section_number = pe.IMAGE_SYM_UNDEFINED
 				symbol.value = 0
 				symbol.storage_class = .EXTERNAL
@@ -72,8 +72,8 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 			}
 		}
 
-		live[symbol_index] = uintptr(addr)
-		retarget[symbol_index] = add_external(alias_in(&merged.aliases, "lp$", name), view, &added_syms, &added_strings, strtab_size)
+		live[symbol_index] = uintptr(address)
+		retarget[symbol_index] = add_external(alias_in(&merged.aliases, "lp$", name), view, &added_symbols, &added_strings, string_table_size)
 		callable[symbol_index] = name
 	}
 
@@ -95,19 +95,19 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 			strip_exports(data, section)
 		}
 		if coff_section_name(section) == ".debug$S" && types.section >= 0 {
-			relocs := coff_section_relocs(data, view.section_headers_offset, section_index)
-			for reloc_index in kept_data_records(data, section, relocs, live, &types) {
-				symbol_index := int(relocs[reloc_index].symbol_table_index)
+			relocations := coff_section_relocations(data, view.section_headers_offset, section_index)
+			for relocation_index in kept_data_records(data, section, relocations, live, &types) {
+				symbol_index := int(relocations[relocation_index].symbol_table_index)
 				cell, found := cells[symbol_index]
 				if !found {
-					name := strings.concatenate({"lp$r", coff_symbol_name(coff_symbol_at(data, view.symtab_offset, symbol_index), data, view.strtab_offset)}, context.temp_allocator)
+					name := strings.concatenate({"lp$r", coff_symbol_name(coff_symbol_at(data, view.symbol_table_offset, symbol_index), data, view.string_table_offset)}, context.temp_allocator)
 					merged.debug_cells[name] = rawptr(live[symbol_index])
-					cell = add_external(name, view, &added_syms, &added_strings, strtab_size)
+					cell = add_external(name, view, &added_symbols, &added_strings, string_table_size)
 					cells[symbol_index] = cell
 				}
 				// The SECREL of the offset and the SECTION of the section index
-				relocs[reloc_index].symbol_table_index = u32le(cell)
-				relocs[reloc_index + 1].symbol_table_index = u32le(cell)
+				relocations[relocation_index].symbol_table_index = u32le(cell)
+				relocations[relocation_index + 1].symbol_table_index = u32le(cell)
 			}
 		}
 
@@ -115,22 +115,22 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 			continue
 		}
 
-		relocs := coff_section_relocs(data, view.section_headers_offset, section_index)
+		relocations := coff_section_relocations(data, view.section_headers_offset, section_index)
 		raw_offset := int(section.pointer_to_raw_data)
 		kept := 0
 
-		for reloc in relocs {
-			reloc := reloc
-			symbol_index := int(reloc.symbol_table_index)
-			site := raw_offset + int(reloc.virtual_address)
+		for relocation in relocations {
+			relocation := relocation
+			symbol_index := int(relocation.symbol_table_index)
+			site := raw_offset + int(relocation.virtual_address)
 
 			switch {
-			case reloc.type == .AMD64_SECREL:
+			case relocation.type == .AMD64_SECREL:
 				if symbol_index >= view.symbol_count {
 					return nil, "<relocation symbol out of range>"
 				}
-				symbol := coff_symbol_at(data, view.symtab_offset, symbol_index)
-				name := coff_symbol_name(symbol, data, view.strtab_offset)
+				symbol := coff_symbol_at(data, view.symbol_table_offset, symbol_index)
+				name := coff_symbol_name(symbol, data, view.string_table_offset)
 				tls_target, found := exe_symbol_address(name, merged.keys)
 				tls_start, have_tls := tls_template_start()
 				tls_offset := i64(uintptr(tls_target)) - i64(tls_start)
@@ -140,7 +140,7 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 				(^u32)(raw_data(data[site:]))^ += u32(tls_offset)
 				continue // removed
 
-			case reloc.type == .AMD64_ADDR64:
+			case relocation.type == .AMD64_ADDR64:
 				if target, found := live[symbol_index]; found {
 					if site + 8 > len(data) {
 						return nil, "<relocation out of bounds>"
@@ -149,28 +149,28 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 					continue // removed
 				}
 
-			case reloc.type >= .AMD64_REL32 && reloc.type <= .AMD64_REL32_5:
-				is_call := reloc.type == .AMD64_REL32 && section.characteristics & .MEM_EXECUTE != {} && reloc.virtual_address > 0 && (data[site - 1] == 0xE8 || data[site - 1] == 0xE9)
+			case relocation.type >= .AMD64_REL32 && relocation.type <= .AMD64_REL32_5:
+				is_call := relocation.type == .AMD64_REL32 && section.characteristics & .MEM_EXECUTE != {} && relocation.virtual_address > 0 && (data[site - 1] == 0xE8 || data[site - 1] == 0xE9)
 				if name, found := callable[symbol_index]; found && is_call {
 					if symbol_index not_in call_retarget {
-						call_retarget[symbol_index] = add_external(alias_in(&merged.call_aliases, "lp$c", name), view, &added_syms, &added_strings, strtab_size)
+						call_retarget[symbol_index] = add_external(alias_in(&merged.call_aliases, "lp$c", name), view, &added_symbols, &added_strings, string_table_size)
 					}
-					reloc.symbol_table_index = u32le(call_retarget[symbol_index])
+					relocation.symbol_table_index = u32le(call_retarget[symbol_index])
 				} else if alias_index, aliased := retarget[symbol_index]; aliased {
-					reloc.symbol_table_index = u32le(alias_index)
+					relocation.symbol_table_index = u32le(alias_index)
 				}
 			}
-			relocs[kept] = reloc
+			relocations[kept] = relocation
 			kept += 1
 		}
 
-		set_section_reloc_count(data, view.section_headers_offset, section_index, kept)
+		set_section_relocation_count(data, view.section_headers_offset, section_index, kept)
 	}
 
 	// New symbols go before the string table, a grown .debug$T after it.
-	head := view.strtab_offset
-	tail := head + len(added_syms) * pe.COFF_SYMBOL_SIZE
-	types_offset := mem.align_forward_int(tail + strtab_size + len(added_strings), 4)
+	head := view.string_table_offset
+	tail := head + len(added_symbols) * pe.COFF_SYMBOL_SIZE
+	types_offset := mem.align_forward_int(tail + string_table_size + len(added_strings), 4)
 	old_types: []byte
 
 	if len(types.records) > 0 {
@@ -178,14 +178,14 @@ retarget_object_references :: proc(object: ^Loaded_Object, merged: ^Merged) -> (
 		old_types = data[int(section.pointer_to_raw_data):][:int(section.size_of_raw_data)]
 	}
 
-	out = make([]byte, len(old_types) > 0 ? types_offset + len(old_types) + len(types.records) : tail + strtab_size + len(added_strings), context.temp_allocator)
+	out = make([]byte, len(old_types) > 0 ? types_offset + len(old_types) + len(types.records) : tail + string_table_size + len(added_strings), context.temp_allocator)
 	copy(out, data[:head])
-	copy(out[head:], slice.to_bytes(added_syms[:]))
-	copy(out[tail:], data[view.strtab_offset:])
-	copy(out[tail + strtab_size:], added_strings[:])
-	(^u32le)(raw_data(out[tail:]))^ = u32le(strtab_size + len(added_strings))
+	copy(out[head:], slice.to_bytes(added_symbols[:]))
+	copy(out[tail:], data[view.string_table_offset:])
+	copy(out[tail + string_table_size:], added_strings[:])
+	(^u32le)(raw_data(out[tail:]))^ = u32le(string_table_size + len(added_strings))
 	file_header := (^pe.File_Header)(raw_data(out))
-	file_header.number_of_symbols = u32le(view.symbol_count + len(added_syms))
+	file_header.number_of_symbols = u32le(view.symbol_count + len(added_symbols))
 
 	if len(old_types) > 0 {
 		copy(out[types_offset:], old_types)
@@ -232,21 +232,21 @@ cv_type_count :: proc(data: []byte, section: ^pe.Section_Header32) -> (count: in
 }
 
 // Makes kept data records references and thread-local records S_SKIP. Returns the SECREL index of each data record.
-kept_data_records :: proc(data: []byte, section: ^pe.Section_Header32, relocs: []Coff_Reloc, live: map[int]uintptr, types: ^Debug_Types) -> []int {
+kept_data_records :: proc(data: []byte, section: ^pe.Section_Header32, relocations: []Coff_Reloc, live: map[int]uintptr, types: ^Debug_Types) -> []int {
 	found := make([dynamic]int, context.temp_allocator)
 	start := int(section.pointer_to_raw_data)
 	end := start + int(section.size_of_raw_data)
 
-	for reloc, reloc_index in relocs {
-		if reloc.type != .AMD64_SECREL || reloc_index + 1 >= len(relocs) {
+	for relocation, relocation_index in relocations {
+		if relocation.type != .AMD64_SECREL || relocation_index + 1 >= len(relocations) {
 			continue
 		}
-		next := relocs[reloc_index + 1]
-		if next.type != .AMD64_SECTION || next.symbol_table_index != reloc.symbol_table_index || next.virtual_address != reloc.virtual_address + 4 {
+		next := relocations[relocation_index + 1]
+		if next.type != .AMD64_SECTION || next.symbol_table_index != relocation.symbol_table_index || next.virtual_address != relocation.virtual_address + 4 {
 			continue
 		}
 		// The record: length (2), kind (2), type index (4), then the offset with this relocation
-		offset_at := start + int(reloc.virtual_address)
+		offset_at := start + int(relocation.virtual_address)
 		if offset_at - 8 < start || offset_at + 6 > end || end > len(data) {
 			continue
 		}
@@ -255,7 +255,7 @@ kept_data_records :: proc(data: []byte, section: ^pe.Section_Header32, relocs: [
 			kind^ = CV_S_SKIP
 			continue
 		}
-		if kind^ != CV_S_LDATA32 && kind^ != CV_S_GDATA32 || int(reloc.symbol_table_index) not_in live {
+		if kind^ != CV_S_LDATA32 && kind^ != CV_S_GDATA32 || int(relocation.symbol_table_index) not_in live {
 			continue
 		}
 		type_index := (^u32le)(raw_data(data[offset_at - 4:]))
@@ -271,7 +271,7 @@ kept_data_records :: proc(data: []byte, section: ^pe.Section_Header32, relocs: [
 			append(&types.records, ..mem.ptr_to_bytes(&record))
 		}
 		type_index^ = u32le(ref)
-		append(&found, reloc_index)
+		append(&found, relocation_index)
 	}
 	return found[:]
 }
@@ -306,14 +306,14 @@ strip_exports :: proc(data: []byte, section: ^pe.Section_Header32) {
 	}
 }
 
-set_section_reloc_count :: proc(data: []byte, section_headers_offset, section_index, reloc_count: int) {
+set_section_relocation_count :: proc(data: []byte, section_headers_offset, section_index, relocation_count: int) {
 	section := coff_section_header(data, section_headers_offset, section_index)
 
 	if section.characteristics & .LNK_NRELOC_OVFL != {} && section.number_of_relocations == 0xFFFF {
 		placeholder := (^Coff_Reloc)(raw_data(data[int(section.pointer_to_relocations):]))
-		placeholder.virtual_address = u32le(reloc_count + 1)
+		placeholder.virtual_address = u32le(relocation_count + 1)
 		return
 	}
 
-	section.number_of_relocations = u16le(reloc_count)
+	section.number_of_relocations = u16le(relocation_count)
 }

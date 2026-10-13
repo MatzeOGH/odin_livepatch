@@ -36,20 +36,20 @@ object_max_image_size :: proc(object: Loaded_Object) -> (size: int) {
 // Skips the auxiliary records.
 next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Object_Symbol, ok: bool) {
 	view := object.view
-	coff_sym, symbol_index := next_coff_symbol(object.data, view.symtab_offset, view.symbol_count, cursor) or_return
-	symbol.name = coff_symbol_name(coff_sym, object.data, view.strtab_offset)
-	symbol.local = coff_sym.storage_class == .STATIC
+	coff_symbol, symbol_index := next_coff_symbol(object.data, view.symbol_table_offset, view.symbol_count, cursor) or_return
+	symbol.name = coff_symbol_name(coff_symbol, object.data, view.string_table_offset)
+	symbol.local = coff_symbol.storage_class == .STATIC
 
-	def_section := coff_symbol_section(coff_sym)
+	def_section := coff_symbol_section(coff_symbol)
 	if def_section > 0 {
-		symbol.provides = coff_sym.storage_class == .EXTERNAL
+		symbol.provides = coff_symbol.storage_class == .EXTERNAL
 	} else if def_section == 0 {
 		// A weak external defines its name through its default, the tag symbol.
-		aux, weak := coff_weak_external_aux(object.data, view.symtab_offset, symbol_index, coff_sym)
+		aux, weak := coff_weak_external_aux(object.data, view.symbol_table_offset, symbol_index, coff_symbol)
 		if weak && int(aux.tag_index) < view.symbol_count {
 			symbol.provides = true
-			def_section = coff_symbol_section(coff_symbol_at(object.data, view.symtab_offset, int(aux.tag_index)))
-		} else if coff_sym.storage_class == .EXTERNAL {
+			def_section = coff_symbol_section(coff_symbol_at(object.data, view.symbol_table_offset, int(aux.tag_index)))
+		} else if coff_symbol.storage_class == .EXTERNAL {
 			symbol.kind = .Undefined
 			return symbol, true
 		}
@@ -59,10 +59,10 @@ next_object_symbol :: proc(object: Loaded_Object, cursor: ^int) -> (symbol: Obje
 	}
 
 	section := coff_section_header(object.data, view.section_headers_offset, def_section - 1)
-	section_name := object_section_name(section, object.data, view.strtab_offset)
+	section_name := object_section_name(section, object.data, view.string_table_offset)
 	switch {
 	case is_discarded_section(section),
-	     coff_symbol_section(coff_sym) > 0 && is_object_local(coff_sym, symbol.name, section_name),
+	     coff_symbol_section(coff_symbol) > 0 && is_object_local(coff_symbol, symbol.name, section_name),
 	     strings.has_prefix(symbol.name, ".weak."),
 	     section_name == ".tls$":
 		symbol.kind = .Skipped
@@ -91,24 +91,24 @@ needs_near_address :: proc(refs: Near_References, name: string) -> bool {
 absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	cell_count := len(merged.debug_cells)
 	symbol_count := len(merged.aliases) + len(merged.call_aliases) + len(merged.externals) + cell_count
-	strtab_size := 4
-	for _, alias in merged.aliases      do strtab_size += len(alias) + 1
-	for _, alias in merged.call_aliases do strtab_size += len(alias) + 1
-	for name in merged.externals        do strtab_size += len(name) + 1
-	for name in merged.debug_cells      do strtab_size += len(name) + 1
+	string_table_size := 4
+	for _, alias in merged.aliases      do string_table_size += len(alias) + 1
+	for _, alias in merged.call_aliases do string_table_size += len(alias) + 1
+	for name in merged.externals        do string_table_size += len(name) + 1
+	for name in merged.debug_cells      do string_table_size += len(name) + 1
 
 	section_count := cell_count > 0 ? 1 : 0
-	cells_offset := FILE_HDR_SIZE + section_count * SECTION_HDR_SIZE
-	symtab_offset := cells_offset + cell_count * 8
-	strtab_offset := symtab_offset + symbol_count * pe.COFF_SYMBOL_SIZE
-	out := make([]byte, strtab_offset + strtab_size, context.temp_allocator)
+	cells_offset := FILE_HEADER_SIZE + section_count * SECTION_HEADER_SIZE
+	symbol_table_offset := cells_offset + cell_count * 8
+	string_table_offset := symbol_table_offset + symbol_count * pe.COFF_SYMBOL_SIZE
+	out := make([]byte, string_table_offset + string_table_size, context.temp_allocator)
 
-	symbols := slice.into_dynamic(slice.reinterpret([]Coff_Symbol, out[symtab_offset:strtab_offset]))
-	string_table := slice.into_dynamic(out[strtab_offset:])
+	symbols := slice.into_dynamic(slice.reinterpret([]Coff_Symbol, out[symbol_table_offset:string_table_offset]))
+	string_table := slice.into_dynamic(out[string_table_offset:])
 	append(&string_table, 0, 0, 0, 0)
 
-	add_absolute_symbol :: proc(symbols: ^[dynamic]Coff_Symbol, string_table: ^[dynamic]u8, name: string, addr: rawptr, section := i16le(pe.IMAGE_SYM_ABSOLUTE)) {
-		symbol := Coff_Symbol{value = u32le(uintptr(addr)), section_number = section, storage_class = .EXTERNAL}
+	add_absolute_symbol :: proc(symbols: ^[dynamic]Coff_Symbol, string_table: ^[dynamic]u8, name: string, address: rawptr, section := i16le(pe.IMAGE_SYM_ABSOLUTE)) {
+		symbol := Coff_Symbol{value = u32le(uintptr(address)), section_number = section, storage_class = .EXTERNAL}
 		(^u32le)(&symbol.name[4])^ = u32le(len(string_table))
 		append(string_table, name)
 		append(string_table, 0)
@@ -121,26 +121,26 @@ absolute_symbols_object :: proc(merged: ^Merged) -> []byte {
 	for name, alias in merged.call_aliases {
 		add_absolute_symbol(&symbols, &string_table, alias, call_target(merged, name))
 	}
-	for name, addr in merged.externals {
-		add_absolute_symbol(&symbols, &string_table, name, addr)
+	for name, address in merged.externals {
+		add_absolute_symbol(&symbols, &string_table, name, address)
 	}
 
-	cells := slice.into_dynamic(out[cells_offset:symtab_offset])
-	for name, addr in merged.debug_cells {
+	cells := slice.into_dynamic(out[cells_offset:symbol_table_offset])
+	for name, address in merged.debug_cells {
 		add_absolute_symbol(&symbols, &string_table, name, rawptr(uintptr(len(cells))), section = 1)
-		cell := u64le(uintptr(addr))
+		cell := u64le(uintptr(address))
 		append(&cells, ..mem.ptr_to_bytes(&cell)) // bytes: cells_offset is not 8-aligned
 	}
-	(^u32le)(raw_data(string_table[:]))^ = u32le(strtab_size)
-	assert(len(symbols) == symbol_count && len(string_table) == strtab_size)
+	(^u32le)(raw_data(string_table[:]))^ = u32le(string_table_size)
+	assert(len(symbols) == symbol_count && len(string_table) == string_table_size)
 
 	file_header := (^pe.File_Header)(raw_data(out))
 	file_header.machine = .AMD64
 	file_header.number_of_sections = u16le(section_count)
-	file_header.pointer_to_symbol_table = u32le(symtab_offset)
+	file_header.pointer_to_symbol_table = u32le(symbol_table_offset)
 	file_header.number_of_symbols = u32le(symbol_count)
 	if section_count > 0 {
-		section := coff_section_header(out, FILE_HDR_SIZE, 0)
+		section := coff_section_header(out, FILE_HEADER_SIZE, 0)
 		copy(section.name[:], ".rdata")
 		section.size_of_raw_data = u32le(cell_count * 8)
 		section.pointer_to_raw_data = u32le(cells_offset)
@@ -161,9 +161,9 @@ startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) ->
 		data, view := object.data, object.view
 		clear(&ranges)
 		cursor := 0
-		for symbol in next_coff_symbol(data, view.symtab_offset, view.symbol_count, &cursor) {
+		for symbol in next_coff_symbol(data, view.symbol_table_offset, view.symbol_count, &cursor) {
 			section := coff_symbol_section(symbol)
-			if section > 0 && section <= view.section_count && is_global_init_proc(coff_symbol_name(symbol, data, view.strtab_offset)) {
+			if section > 0 && section <= view.section_count && is_global_init_proc(coff_symbol_name(symbol, data, view.string_table_offset)) {
 				size := coff_section_header(data, view.section_headers_offset, section - 1).size_of_raw_data
 				append(&ranges, Range{section, int(symbol.value), int(size)})
 			}
@@ -172,7 +172,7 @@ startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) ->
 			continue
 		}
 		cursor = 0
-		for symbol in next_coff_symbol(data, view.symtab_offset, view.symbol_count, &cursor) {
+		for symbol in next_coff_symbol(data, view.symbol_table_offset, view.symbol_count, &cursor) {
 			for &r in ranges {
 				if coff_symbol_section(symbol) == r.section && int(symbol.value) > r.start {
 					r.end = min(r.end, int(symbol.value))
@@ -180,11 +180,11 @@ startup_initialized_global :: proc(objects: []Loaded_Object, merged: ^Merged) ->
 			}
 		}
 		for r in ranges {
-			for reloc in coff_section_relocs(data, view.section_headers_offset, r.section - 1) {
-				if site := int(reloc.virtual_address); site < r.start || site >= r.end || int(reloc.symbol_table_index) >= view.symbol_count {
+			for relocation in coff_section_relocations(data, view.section_headers_offset, r.section - 1) {
+				if site := int(relocation.virtual_address); site < r.start || site >= r.end || int(relocation.symbol_table_index) >= view.symbol_count {
 					continue
 				}
-				name := coff_symbol_name(coff_symbol_at(data, view.symtab_offset, int(reloc.symbol_table_index)), data, view.strtab_offset)
+				name := coff_symbol_name(coff_symbol_at(data, view.symbol_table_offset, int(relocation.symbol_table_index)), data, view.string_table_offset)
 				if name in merged.new_globals {
 					return name
 				}

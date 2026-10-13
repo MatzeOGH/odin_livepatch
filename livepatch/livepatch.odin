@@ -173,8 +173,8 @@ when LIVEPATCH {
 		commit_time := time.tick_since(phase_start)
 
 		for name, size in pending.merged.new_globals {
-			if addr, found := pending.module[name]; found {
-				global_register(data_key(pending.merged.keys, name), rawptr(addr), size)
+			if address, found := pending.module[name]; found {
+				global_register(data_key(pending.merged.keys, name), rawptr(address), size)
 			}
 		}
 

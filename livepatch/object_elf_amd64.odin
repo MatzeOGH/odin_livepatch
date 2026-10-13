@@ -1,8 +1,8 @@
 #+build linux amd64
 package livepatch
 
-classify_relocation :: proc "contextless" (rela_type: u32) -> Relocation_Class {
-	switch rela_type {
+classify_relocation :: proc "contextless" (relocation_type: u32) -> Relocation_Class {
+	switch relocation_type {
 	case R_X86_64_NONE, R_X86_64_DTPOFF64, R_X86_64_DTPMOD64, R_X86_64_TPOFF64:
 		return .Ignored
 	case R_X86_64_GOTTPOFF, R_X86_64_TLSGD, R_X86_64_TLSLD, R_X86_64_DTPOFF32, R_X86_64_TPOFF32:
@@ -11,29 +11,29 @@ classify_relocation :: proc "contextless" (rela_type: u32) -> Relocation_Class {
 	return .Other
 }
 
-is_rel32_reference :: proc "contextless" (rela_type: u32) -> bool {
-	return rela_type == R_X86_64_PLT32 || rela_type == R_X86_64_PC32
+is_rel32_reference :: proc "contextless" (relocation_type: u32) -> bool {
+	return relocation_type == R_X86_64_PLT32 || relocation_type == R_X86_64_PC32
 }
 
-// Rewrites the thread-local access at relas[rela_index] to local-exec
-rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []Elf64_Rela, rela_index: int) -> (ok: bool) {
-	rela := &relas[rela_index]
-	rela_type := rela.info.type
-	symbol_index := int(rela.info.symbol)
-	site := int(rela.offset)
+// Rewrites the thread-local access at relocations[relocation_index] to local-exec
+rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relocations: []Elf64_Rela, relocation_index: int) -> (ok: bool) {
+	relocation := &relocations[relocation_index]
+	relocation_type := relocation.info.type
+	symbol_index := int(relocation.info.symbol)
+	site := int(relocation.offset)
 
 	// The call to __tls_get_addr that follows a TLSGD or TLSLD
-	drop_tls_get_addr_call :: proc(relas: []Elf64_Rela, rela_index: int, call_site: int) -> bool {
-		for later in rela_index + 1 ..< len(relas) {
-			if int(relas[later].offset) == call_site {
-				relas[later].info = Elf_Rela_Info{type = R_X86_64_NONE}
+	drop_tls_get_addr_call :: proc(relocations: []Elf64_Rela, relocation_index: int, call_site: int) -> bool {
+		for later in relocation_index + 1 ..< len(relocations) {
+			if int(relocations[later].offset) == call_site {
+				relocations[later].info = Elf_Rela_Info{type = R_X86_64_NONE}
 				return true
 			}
 		}
 		return false
 	}
 
-	switch rela_type {
+	switch relocation_type {
 	case R_X86_64_GOTTPOFF:
 		// mov/add reg, [rip+x@gottpoff]  ->  mov/add reg, imm32
 		if site < 3 || site + 4 > len(code) {
@@ -66,7 +66,7 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 			return
 		}
 		tp_offset := thread_pointer_offset(rewrite, symbol_index, 0) or_return
-		drop_tls_get_addr_call(relas, rela_index, site + 8) or_return
+		drop_tls_get_addr_call(relocations, relocation_index, site + 8) or_return
 		copy(code[site - 4:], "\x64\x48\x8b\x04\x25\x00\x00\x00\x00\x48\x8d\x80")
 		(^i32)(&code[site + 8])^ = tp_offset
 
@@ -78,10 +78,10 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		}
 		switch {
 		case code[site + 4] == 0xE8:
-			drop_tls_get_addr_call(relas, rela_index, site + 5) or_return
+			drop_tls_get_addr_call(relocations, relocation_index, site + 5) or_return
 			copy(code[site - 3:], "\x66\x66\x66\x64\x48\x8b\x04\x25\x00\x00\x00\x00")
 		case site + 10 <= len(code) && code[site + 4] == 0xFF && code[site + 5] == 0x15:
-			drop_tls_get_addr_call(relas, rela_index, site + 6) or_return
+			drop_tls_get_addr_call(relocations, relocation_index, site + 6) or_return
 			copy(code[site - 3:], "\x66\x66\x66\x66\x64\x48\x8b\x04\x25\x00\x00\x00\x00")
 		case:
 			return
@@ -92,9 +92,9 @@ rewrite_tls_to_local_exec :: proc(rewrite: ^Elf_Rewrite, code: []byte, relas: []
 		if site + 4 > len(code) {
 			return
 		}
-		tp_offset := thread_pointer_offset(rewrite, symbol_index, rela.addend) or_return
+		tp_offset := thread_pointer_offset(rewrite, symbol_index, relocation.addend) or_return
 		(^i32)(&code[site])^ = tp_offset
 	}
-	rela.info = Elf_Rela_Info{type = R_X86_64_NONE}
+	relocation.info = Elf_Rela_Info{type = R_X86_64_NONE}
 	return true
 }

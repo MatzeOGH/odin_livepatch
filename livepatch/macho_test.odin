@@ -36,9 +36,9 @@ test_macho_exe :: proc(t: ^testing.T) {
 	testing.expect_value(t, view.header.magic, MH_MAGIC_64)
 	testing.expect_value(t, view.header.filetype, MH_EXECUTE)
 	testing.expect_value(t, view.header.cputype, CPU_TYPE_ARM64)
-	testing.expect(t, view.symtab != nil, "the exe has LC_SYMTAB")
-	testing.expect(t, view.dysymtab != nil, "the exe has LC_DYSYMTAB")
-	testing.expect(t, len(view.syms) > 0, "the exe has a symbol table")
+	testing.expect(t, view.symbol_table != nil, "the exe has LC_SYMTAB")
+	testing.expect(t, view.dynamic_symbol_table != nil, "the exe has LC_DYSYMTAB")
+	testing.expect(t, len(view.symbols) > 0, "the exe has a symbol table")
 	testing.expect(t, len(view.segments) == int(count_commands(data, view, LC_SEGMENT_64)), "each LC_SEGMENT_64 is in segments")
 
 	has_page_zero, has_text := false, false
@@ -60,11 +60,11 @@ test_macho_exe :: proc(t: ^testing.T) {
 	testing.expect(t, has_text, "the exe has __TEXT,__text")
 
 	probe_value: uintptr
-	for sym in view.syms {
-		if macho_symbol_section(view, sym) != nil && macho_raw_name(view, sym) == "_livepatch::test_probe" {
-			probe_value = uintptr(sym.n_value)
-			testing.expect_value(t, macho_symbol_name(view, sym), "livepatch::test_probe")
-			testing.expect(t, !macho_is_temporary(macho_raw_name(view, sym)), "a name with _ is not a temporary")
+	for symbol in view.symbols {
+		if macho_symbol_section(view, symbol) != nil && macho_raw_name(view, symbol) == "_livepatch::test_probe" {
+			probe_value = uintptr(symbol.n_value)
+			testing.expect_value(t, macho_symbol_name(view, symbol), "livepatch::test_probe")
+			testing.expect(t, !macho_is_temporary(macho_raw_name(view, symbol)), "a name with _ is not a temporary")
 		}
 	}
 	testing.expect(t, probe_value != 0, "the exe has the symbol _livepatch::test_probe")
@@ -73,9 +73,9 @@ test_macho_exe :: proc(t: ^testing.T) {
 
 	symbols := read_macho_symbols(view, slide, allocator = context.temp_allocator)
 	log.infof("read_macho_symbols: %d keys, %d starts", len(symbols.symbols), len(symbols.starts))
-	for key, addr in symbols.symbols {
+	for key, address in symbols.symbols {
 		if strings.has_prefix(key, "livepatch::") {
-			log.debugf("  symbol %-50s 0x%x", key, addr)
+			log.debugf("  symbol %-50s 0x%x", key, address)
 		}
 	}
 
@@ -86,9 +86,9 @@ test_macho_exe :: proc(t: ^testing.T) {
 	instances := 0
 	testing.expect_value(t, test_generic(1), 2)
 	testing.expect_value(t, test_generic(1.5), 3.0)
-	for key, addr in symbols.symbols {
+	for key, address in symbols.symbols {
 		if strings.has_prefix(key, "livepatch::test_generic") {
-			log.infof("generic instance %s 0x%x", key, addr)
+			log.infof("generic instance %s 0x%x", key, address)
 			instances += 1
 		}
 	}
@@ -96,8 +96,8 @@ test_macho_exe :: proc(t: ^testing.T) {
 	testing.expect(t, len(symbols.starts) >= len(symbols.symbols), "each symbol has a start")
 	testing.expect_value(t, slide & (0x4000 - 1), 0)
 
-	if dysymtab := view.dysymtab; dysymtab != nil {
-		testing.expect_value(t, len(symbols.starts), int(dysymtab.nlocalsym + dysymtab.nextdefsym))
+	if dynamic_symbol_table := view.dynamic_symbol_table; dynamic_symbol_table != nil {
+		testing.expect_value(t, len(symbols.starts), int(dynamic_symbol_table.nlocalsym + dynamic_symbol_table.nextdefsym))
 	}
 
 	// Each 24-byte TLV descriptor in __thread_vars has a key
@@ -107,9 +107,9 @@ test_macho_exe :: proc(t: ^testing.T) {
 		}
 		start := slide + uintptr(section.addr)
 		descriptors := 0
-		for key, addr in symbols.symbols {
-			if addr >= start && addr < start + uintptr(section.size) {
-				log.debugf("  TLV descriptor %-42s 0x%x", key, addr)
+		for key, address in symbols.symbols {
+			if address >= start && address < start + uintptr(section.size) {
+				log.debugf("  TLV descriptor %-42s 0x%x", key, address)
 				descriptors += 1
 			}
 		}
@@ -122,16 +122,16 @@ test_macho_exe :: proc(t: ^testing.T) {
 	// Only compiler helpers have internal linkage under -use-separate-modules, so only they repeat
 	addresses := make(map[string]uintptr, context.temp_allocator)
 	ambiguous := make(map[string]int, context.temp_allocator)
-	for sym in view.syms {
-		raw_name := macho_raw_name(view, sym)
-		if macho_symbol_section(view, sym) == nil || macho_is_temporary(raw_name) {
+	for symbol in view.symbols {
+		raw_name := macho_raw_name(view, symbol)
+		if macho_symbol_section(view, symbol) == nil || macho_is_temporary(raw_name) {
 			continue
 		}
-		name := macho_symbol_name(view, sym)
-		if addr, found := addresses[name]; found && addr != uintptr(sym.n_value) {
+		name := macho_symbol_name(view, symbol)
+		if address, found := addresses[name]; found && address != uintptr(symbol.n_value) {
 			ambiguous[name] += 1
 		}
-		addresses[name] = uintptr(sym.n_value)
+		addresses[name] = uintptr(symbol.n_value)
 	}
 	for name, extra in ambiguous {
 		log.debugf("  ambiguous %-60s %d more definitions", name, extra)
@@ -194,25 +194,25 @@ log_view :: proc(view: Macho_View) {
 			segment.initprot, segment.maxprot, segment.nsects)
 	}
 	for section, index in view.sections {
-		log.infof("    section %2d %s,%-20s addr=0x%x size=0x%x offset=0x%x align=%d nreloc=%d type=0x%x flags=0x%x code=%v thread_local=%v",
+		log.infof("    section %2d %s,%-20s address=0x%x size=0x%x offset=0x%x align=%d nreloc=%d type=0x%x flags=0x%x code=%v thread_local=%v",
 			index + 1, fixed_name(&section.segname), fixed_name(&section.sectname), section.addr, section.size, section.offset,
 			section.align, section.nreloc, section.flags & SECTION_TYPE, section.flags, macho_is_code(section), macho_is_thread_local(section))
 	}
-	if symtab := view.symtab; symtab != nil {
-		log.infof("  LC_SYMTAB: nsyms=%d symoff=0x%x strsize=%d stroff=0x%x", symtab.nsyms, symtab.symoff, symtab.strsize, symtab.stroff)
+	if symbol_table := view.symbol_table; symbol_table != nil {
+		log.infof("  LC_SYMTAB: nsyms=%d symoff=0x%x strsize=%d stroff=0x%x", symbol_table.nsyms, symbol_table.symoff, symbol_table.strsize, symbol_table.stroff)
 	}
-	if dysymtab := view.dysymtab; dysymtab != nil {
+	if dynamic_symbol_table := view.dynamic_symbol_table; dynamic_symbol_table != nil {
 		log.infof("  LC_DYSYMTAB: locals %d+%d, external definitions %d+%d, undefined %d+%d, indirect %d",
-			dysymtab.ilocalsym, dysymtab.nlocalsym, dysymtab.iextdefsym, dysymtab.nextdefsym,
-			dysymtab.iundefsym, dysymtab.nundefsym, dysymtab.nindirectsyms)
+			dynamic_symbol_table.ilocalsym, dynamic_symbol_table.nlocalsym, dynamic_symbol_table.iextdefsym, dynamic_symbol_table.nextdefsym,
+			dynamic_symbol_table.iundefsym, dynamic_symbol_table.nundefsym, dynamic_symbol_table.nindirectsyms)
 	}
 	MAX_LOGGED :: 40
-	for sym, index in view.syms {
+	for symbol, index in view.symbols {
 		if index == MAX_LOGGED {
-			log.debugf("  ... %d more symbols", len(view.syms) - MAX_LOGGED)
+			log.debugf("  ... %d more symbols", len(view.symbols) - MAX_LOGGED)
 			break
 		}
-		log.debugf("  nlist %4d %-50s type=0x%02x sect=%d desc=0x%x value=0x%x", index, macho_raw_name(view, sym), sym.n_type, sym.n_sect, sym.n_desc, sym.n_value)
+		log.debugf("  nlist %4d %-50s type=0x%02x sect=%d desc=0x%x value=0x%x", index, macho_raw_name(view, symbol), symbol.n_type, symbol.n_sect, symbol.n_desc, symbol.n_value)
 	}
 }
 

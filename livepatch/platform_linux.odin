@@ -38,16 +38,16 @@ exe_image_size :: proc "contextless" () -> uintptr {
 
 load_exe_symbols :: proc(exe_path: string) {
 	view, ok := parse_elf(exe_file)
-	if !ok || view.symtab == 0 {
+	if !ok || view.symbol_table == 0 {
 		return
 	}
 	probe_value: uintptr
 	found := false
 
-	for sym in view.syms {
-		_ = elf_symbol_section_index(view, sym) or_continue
-		if elf_symbol_name(view, sym) == "livepatch::exe_probe" {
-			probe_value, found = uintptr(sym.value), true
+	for symbol in view.symbols {
+		_ = elf_symbol_section_index(view, symbol) or_continue
+		if elf_symbol_name(view, symbol) == "livepatch::exe_probe" {
+			probe_value, found = uintptr(symbol.value), true
 			break
 		}
 	}
@@ -98,11 +98,11 @@ load_exe_symbols :: proc(exe_path: string) {
 	exe_starts = exe_symbols.starts[:]
 	exe_tls = exe_symbols.tls
 
-	for sym in view.syms {
-		if sym.info.type == STT_OBJECT && sym.size > 0 {
-			_ = elf_symbol_section_index(view, sym) or_continue
-			address := exe_bias + uintptr(sym.value)
-			variable_sizes[address] = max(variable_sizes[address], int(sym.size))
+	for symbol in view.symbols {
+		if symbol.info.type == STT_OBJECT && symbol.size > 0 {
+			_ = elf_symbol_section_index(view, symbol) or_continue
+			address := exe_bias + uintptr(symbol.value)
+			variable_sizes[address] = max(variable_sizes[address], int(symbol.size))
 		}
 	}
 }
@@ -167,7 +167,7 @@ make_exe_writable :: proc() -> Error {
 mapped_sizes: map[uintptr]int
 alloc_error:  linux.Errno
 
-page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
+page_alloc_at :: proc(address: uintptr, size: int, commit: bool) -> rawptr {
 	protection := linux.Mem_Protection{}
 	flags := linux.Map_Flags{.PRIVATE, .ANONYMOUS, .FIXED_NOREPLACE}
 	if commit {
@@ -175,18 +175,18 @@ page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
 	} else {
 		flags += {.NORESERVE}
 	}
-	mem, map_err := linux.mmap(addr, uint(size), protection, flags)
+	mem, map_err := linux.mmap(address, uint(size), protection, flags)
 	if map_err != .NONE {
 		if map_err != .EEXIST {
 			alloc_error = map_err // for example EACCES, when SELinux denies execmem
 		}
 		return nil
 	}
-	if uintptr(mem) != addr {
+	if uintptr(mem) != address {
 		linux.munmap(mem, uint(size))
 		return nil
 	}
-	mapped_sizes[addr] = size
+	mapped_sizes[address] = size
 	return mem
 }
 
@@ -228,7 +228,7 @@ commit_at :: proc(start: uintptr, size: int) -> bool {
 own_pages: map[uintptr]bool
 
 // x86-64 keeps the instruction cache coherent with stores
-flush_icache :: proc "contextless" (addr: rawptr, size: int) {}
+flush_icache :: proc "contextless" (address: rawptr, size: int) {}
 
 MAX_STOPPED :: 1024
 
@@ -458,13 +458,13 @@ debugger_attached :: proc() -> bool {
 	return strings.trim_space(tracer) != "0"
 }
 
-loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
+loaded_export :: proc(name: string) -> (address: rawptr, ok: bool) {
 	if strings.contains(name, "::") {
 		return
 	}
 	c_name := strings.clone_to_cstring(name, context.temp_allocator)
-	symbol_addr := posix.dlsym(nil, c_name) // RTLD_DEFAULT
-	return symbol_addr, symbol_addr != nil
+	symbol_address := posix.dlsym(nil, c_name) // RTLD_DEFAULT
+	return symbol_address, symbol_address != nil
 }
 
 LINKER_SEARCH :: [?]string{"ld.lld", "mold", "ld"}

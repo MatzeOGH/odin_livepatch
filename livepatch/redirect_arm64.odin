@@ -21,8 +21,8 @@ Branch :: bit_field u32 {
 	op:    u32 | 6,
 }
 
-tramp_block: rawptr
-tramp_used:  int
+trampoline_block: rawptr
+trampoline_used:  int
 
 mirror_init :: proc() {}
 
@@ -31,16 +31,16 @@ alloc_module :: proc(size: int) -> rawptr {
 }
 
 plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result) {
-	tramp, ok := alloc_tramp()
+	trampoline, ok := alloc_trampoline()
 	if !ok {
 		return {}, .No_Memory
 	}
-	assert(abs(i64(uintptr(tramp)) - i64(uintptr(entry))) < 1 << 27) // alloc_near keeps tramps in BRANCH_REACH
-	return Redirect_Site{site = entry, tramp = tramp, call = entry}, .Ok
+	assert(abs(i64(uintptr(trampoline)) - i64(uintptr(entry))) < 1 << 27) // alloc_near keeps tramps in BRANCH_REACH
+	return Redirect_Site{site = entry, trampoline = trampoline, call = entry}, .Ok
 }
 
-alloc_tramp :: proc() -> (tramp: rawptr, ok: bool) {
-	if tramp_block == nil || tramp_used == VENEERS_PER_BLOCK {
+alloc_trampoline :: proc() -> (trampoline: rawptr, ok: bool) {
+	if trampoline_block == nil || trampoline_used == VENEERS_PER_BLOCK {
 		memory := alloc_near(2 * int(PAGE_SIZE))
 		if memory == nil {
 			return
@@ -50,32 +50,32 @@ alloc_tramp :: proc() -> (tramp: rawptr, ok: bool) {
 			page_free(memory)
 			return
 		}
-		tramp_block, tramp_used = memory, 0
+		trampoline_block, trampoline_used = memory, 0
 	}
-	tramp = &([^]Veneer)(tramp_block)[tramp_used]
-	tramp_used += 1
-	return tramp, true
+	trampoline = &([^]Veneer)(trampoline_block)[trampoline_used]
+	trampoline_used += 1
+	return trampoline, true
 }
 
-tramp_cell :: proc "contextless" (tramp: rawptr) -> ^rawptr {
-	return (^rawptr)(uintptr(tramp) + PAGE_SIZE)
+trampoline_cell :: proc "contextless" (trampoline: rawptr) -> ^rawptr {
+	return (^rawptr)(uintptr(trampoline) + PAGE_SIZE)
 }
 
-write_tramp_target :: proc "contextless" (tramp, body: rawptr) {
-	tramp_cell(tramp)^ = body
+write_trampoline_target :: proc "contextless" (trampoline, body: rawptr) {
+	trampoline_cell(trampoline)^ = body
 }
 
-got_cell_for :: proc(key: string, addr: rawptr) -> rawptr {
+got_cell_for :: proc(key: string, address: rawptr) -> rawptr {
 	slot := slot_for(key)
 	if slot == nil {
 		return nil
 	}
-	write_tramp_target(slot, addr)
-	return tramp_cell(slot)
+	write_trampoline_target(slot, address)
+	return trampoline_cell(slot)
 }
 
 site_word :: proc "contextless" (redirect_site: Redirect_Site) -> u32 {
-	distance := i64(uintptr(redirect_site.tramp)) - i64(uintptr(redirect_site.site))
+	distance := i64(uintptr(redirect_site.trampoline)) - i64(uintptr(redirect_site.site))
 	return transmute(u32)Branch{imm26 = i32(distance >> 2), op = 0b000101}
 }
 

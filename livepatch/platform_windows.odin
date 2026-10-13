@@ -88,14 +88,14 @@ make_exe_writable :: proc() -> Error {
 	return nil
 }
 
-page_alloc_at :: proc(addr: uintptr, size: int, commit: bool) -> rawptr {
+page_alloc_at :: proc(address: uintptr, size: int, commit: bool) -> rawptr {
 	alloc_type: win.DWORD = win.MEM_RESERVE
 	protect: win.DWORD = win.PAGE_NOACCESS
 	if commit {
 		alloc_type |= win.MEM_COMMIT
 		protect = win.PAGE_EXECUTE_READWRITE
 	}
-	return win.VirtualAlloc(rawptr(addr), win.SIZE_T(size), alloc_type, protect)
+	return win.VirtualAlloc(rawptr(address), win.SIZE_T(size), alloc_type, protect)
 }
 
 // Why the last allocation failed
@@ -142,8 +142,8 @@ commit_at :: proc(start: uintptr, size: int) -> bool {
 own_pages:    map[uintptr]bool
 own_granules: map[uintptr]bool // 64KB reservations
 
-flush_icache :: proc "contextless" (addr: rawptr, size: int) {
-	FlushInstructionCache(win.GetCurrentProcess(), addr, win.SIZE_T(size))
+flush_icache :: proc "contextless" (address: rawptr, size: int) {
+	FlushInstructionCache(win.GetCurrentProcess(), address, win.SIZE_T(size))
 }
 
 Suspended_Threads :: [dynamic]win.HANDLE
@@ -235,7 +235,7 @@ debugger_attached :: proc() -> bool {
 }
 
 // An export of any loaded DLL
-loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
+loaded_export :: proc(name: string) -> (address: rawptr, ok: bool) {
 	if strings.contains(name, "::") {
 		return
 	}
@@ -246,8 +246,8 @@ loaded_export :: proc(name: string) -> (addr: rawptr, ok: bool) {
 	}
 	c_name := strings.clone_to_cstring(name, context.temp_allocator)
 	for module in modules[:min(int(needed) / size_of(win.HMODULE), len(modules))] {
-		if proc_addr := win.GetProcAddress(module, c_name); proc_addr != nil {
-			return proc_addr, true
+		if proc_address := win.GetProcAddress(module, c_name); proc_address != nil {
+			return proc_address, true
 		}
 	}
 	return

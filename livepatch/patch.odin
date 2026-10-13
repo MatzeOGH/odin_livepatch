@@ -19,8 +19,8 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 
 	exe_type_table: ^[]^runtime.Type_Info
 	if merged.type_table_new != nil {
-		if addr, found := exe_symbol_address("runtime::type_table"); found {
-			exe_type_table = (^[]^runtime.Type_Info)(addr)
+		if address, found := exe_symbol_address("runtime::type_table"); found {
+			exe_type_table = (^[]^runtime.Type_Info)(address)
 		}
 	}
 
@@ -42,14 +42,14 @@ commit :: proc(merged: ^Merged, pre_hooks, post_hooks: []Patch_Hook, changed: []
 	fire_hooks(pre_hooks, changed)
 
 	for redirect in merged.redirects {
-		write_tramp_target(sites[redirect.from].tramp, redirect.body)
+		write_trampoline_target(sites[redirect.from].trampoline, redirect.body)
 	}
 	if !write_sites(unwritten[:]) {
 		resume_all(handles)
 		return false
 	}
 	for slot_target in merged.slot_targets {
-		write_tramp_target(slot_target.from, slot_target.body)
+		write_trampoline_target(slot_target.from, slot_target.body)
 	}
 	// Old exe code then also sees the new types
 	if exe_type_table != nil {

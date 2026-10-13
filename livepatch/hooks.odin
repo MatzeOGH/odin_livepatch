@@ -2,8 +2,8 @@
 package livepatch
 
 find_hooks_in_exe :: proc(section: string) -> []Patch_Hook {
-	if addr, size, found := exe_section_named(section); found {
-		ptr := ([^]Patch_Hook)(rawptr(addr))
+	if address, size, found := exe_section_named(section); found {
+		ptr := ([^]Patch_Hook)(rawptr(address))
 		return ptr[:size / size_of(rawptr)]
 	}
 	return nil

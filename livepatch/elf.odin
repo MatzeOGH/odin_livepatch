@@ -132,13 +132,13 @@ R_X86_64_GOTPCRELX     :: 41
 R_X86_64_REX_GOTPCRELX :: 42
 
 Elf_View :: struct {
-	header:   ^Elf64_Ehdr,
-	sections: []Elf64_Shdr,
-	segments: []Elf64_Phdr,
-	shstrtab: []u8,
-	symtab:   int, // index of the .symtab section, 0 if none
-	syms:     []Elf64_Sym,
-	strtab:   []u8, // the names of syms
+	header:             ^Elf64_Ehdr,
+	sections:           []Elf64_Shdr,
+	segments:           []Elf64_Phdr,
+	section_name_table: []u8,
+	symbol_table:       int, // index of the .symtab section, 0 if none
+	symbols:            []Elf64_Sym,
+	string_table:       []u8, // the names of symbols
 }
 
 parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
@@ -165,16 +165,16 @@ parse_elf :: proc(data: []byte) -> (view: Elf_View, ok: bool) {
 		}
 		view.segments = slice.reinterpret([]Elf64_Phdr, data[program_headers_offset:][:int(header.phnum) * size_of(Elf64_Phdr)])
 	}
-	view.shstrtab = elf_section_bytes(data, view.sections[header.shstrndx]) or_return
+	view.section_name_table = elf_section_bytes(data, view.sections[header.shstrndx]) or_return
 	for &section, section_index in view.sections {
 		if section.type == SHT_SYMTAB {
 			if int(section.link) >= len(view.sections) || section.entsize != size_of(Elf64_Sym) {
 				return
 			}
-			symtab_bytes := elf_section_bytes(data, section) or_return
-			view.symtab = section_index
-			view.syms = slice.reinterpret([]Elf64_Sym, symtab_bytes)
-			view.strtab = elf_section_bytes(data, view.sections[section.link]) or_return
+			symbol_table_bytes := elf_section_bytes(data, section) or_return
+			view.symbol_table = section_index
+			view.symbols = slice.reinterpret([]Elf64_Sym, symbol_table_bytes)
+			view.string_table = elf_section_bytes(data, view.sections[section.link]) or_return
 			break
 		}
 	}
@@ -193,7 +193,7 @@ elf_section_bytes :: proc "contextless" (data: []byte, section: Elf64_Shdr) -> (
 }
 
 // The relocations of an SHT_RELA section
-elf_section_relas :: proc "contextless" (data: []byte, section: Elf64_Shdr) -> (relas: []Elf64_Rela, ok: bool) {
+elf_section_relocations :: proc "contextless" (data: []byte, section: Elf64_Shdr) -> (relocations: []Elf64_Rela, ok: bool) {
 	bytes := elf_section_bytes(data, section) or_return
 	if len(bytes) % size_of(Elf64_Rela) != 0 {
 		return
@@ -209,19 +209,19 @@ elf_string_at :: proc "contextless" (table: []u8, offset: u32) -> string {
 }
 
 elf_section_name :: proc "contextless" (view: Elf_View, section: Elf64_Shdr) -> string {
-	return elf_string_at(view.shstrtab, section.name)
+	return elf_string_at(view.section_name_table, section.name)
 }
 
-elf_symbol_name :: proc "contextless" (view: Elf_View, sym: Elf64_Sym) -> string {
-	return elf_string_at(view.strtab, sym.name)
+elf_symbol_name :: proc "contextless" (view: Elf_View, symbol: Elf64_Sym) -> string {
+	return elf_string_at(view.string_table, symbol.name)
 }
 
-// The index of the section that defines sym. Not ok for undefined, absolute and common symbols
-elf_symbol_section_index :: proc "contextless" (view: Elf_View, sym: Elf64_Sym) -> (section_index: int, ok: bool) {
-	if sym.shndx == SHN_UNDEF || sym.shndx >= 0xFF00 || int(sym.shndx) >= len(view.sections) {
+// The index of the section that defines symbol. Not ok for undefined, absolute and common symbols
+elf_symbol_section_index :: proc "contextless" (view: Elf_View, symbol: Elf64_Sym) -> (section_index: int, ok: bool) {
+	if symbol.shndx == SHN_UNDEF || symbol.shndx >= 0xFF00 || int(symbol.shndx) >= len(view.sections) {
 		return
 	}
-	return int(sym.shndx), true
+	return int(symbol.shndx), true
 }
 
 Elf_Symbols :: struct {
@@ -240,33 +240,33 @@ read_elf_symbols :: proc(view: Elf_View, bias: uintptr, stable_keys := true, all
 	keys: Static_Keys
 	if stable_keys {
 		names := make([dynamic]string, context.temp_allocator)
-		for sym in view.syms {
-			append(&names, elf_symbol_name(view, sym))
+		for symbol in view.symbols {
+			append(&names, elf_symbol_name(view, symbol))
 		}
 		keys = static_keys_make(names[:])
 	}
 
 	ambiguous := make(map[string]bool, context.temp_allocator)
-	for sym in view.syms {
-		section_index := elf_symbol_section_index(view, sym) or_continue
+	for symbol in view.symbols {
+		section_index := elf_symbol_section_index(view, symbol) or_continue
 		if view.sections[section_index].flags & SHF_ALLOC == 0 {
 			// Not in memory
 			continue
 		}
-		sym_type := sym.info.type
-		if sym_type == STT_SECTION || sym_type == STT_FILE {
+		symbol_type := symbol.info.type
+		if symbol_type == STT_SECTION || symbol_type == STT_FILE {
 			continue
 		}
-		name := elf_symbol_name(view, sym)
+		name := elf_symbol_name(view, symbol)
 		if name == "" {
 			continue
 		}
 		key := data_key(keys, name)
-		if sym_type == STT_TLS {
-			index_add(&out.tls, &ambiguous, key, uintptr(sym.value), allocator)
+		if symbol_type == STT_TLS {
+			index_add(&out.tls, &ambiguous, key, uintptr(symbol.value), allocator)
 			continue
 		}
-		live_address := bias + uintptr(sym.value)
+		live_address := bias + uintptr(symbol.value)
 		append(&out.starts, live_address)
 		index_add(&out.symbols, &ambiguous, key, live_address, allocator)
 	}

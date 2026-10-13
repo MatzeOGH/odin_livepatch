@@ -6,8 +6,8 @@ import "core:slice"
 
 MIRROR_DELTA :: uintptr(0x3333332F) // site + 5 + i32(0xCCCCCCCC) == site - MIRROR_DELTA
 REDIRECT_SIZE :: size_of(Jmp_Rel32)
-TRAMP_SIZE :: 32
-TRAMP_TARGET :: 24 // offset of the 8-byte target
+TRAMPOLINE_SIZE :: 32
+TRAMPOLINE_TARGET :: 24 // offset of the 8-byte target
 BRANCH_REACH :: uintptr(0x7800_0000) // rel32 reach is 2GB
 
 Jmp_Rel32 :: struct #packed { opcode: u8, rel: i32 }        // E9 rel32
@@ -63,22 +63,22 @@ plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result
 		return {}, .Breakpoint
 	}
 	site := rawptr(uintptr(entry) + uintptr(kept_length))
-	tramp, have_tramp := alloc_tramp(stack_undo)
-	if !have_tramp {
+	trampoline, have_trampoline := alloc_trampoline(stack_undo)
+	if !have_trampoline {
 		return {}, .No_Memory
 	}
-	call := rawptr(uintptr(tramp) + uintptr(tramp_lea_size(stack_undo)))
+	call := rawptr(uintptr(trampoline) + uintptr(trampoline_lea_size(stack_undo)))
 
 	if !mirror_ok {
 		// A plain jmp cannot keep a breakpoint in its displacement.
 		if slice.contains(has_breakpoint[kept_length + 1:][:4], true) {
 			return {}, .Breakpoint
 		}
-		rel32 := i64(uintptr(tramp)) - (i64(uintptr(site)) + 5)
+		rel32 := i64(uintptr(trampoline)) - (i64(uintptr(site)) + 5)
 		if rel32 < i64(min(i32)) || rel32 > i64(max(i32)) {
 			return {}, .No_Memory
 		}
-		return Redirect_Site{site, tramp, call, false}, .Ok
+		return Redirect_Site{site, trampoline, call, false}, .Ok
 	}
 
 	// A stub for each combination of 0xCC and P on the displacement bytes under a breakpoint.
@@ -99,11 +99,11 @@ plan_site :: proc(entry: rawptr) -> (planned: Redirect_Site, result: Plan_Result
 			}
 		}
 		target := uintptr(i64(uintptr(site)) + 5 + i64(transmute(i32)displacement))
-		if !place_stub(rawptr(target), tramp, variant != 0) {
+		if !place_stub(rawptr(target), trampoline, variant != 0) {
 			return {}, variant == 0 ? .No_Memory : .Breakpoint
 		}
 	}
-	return Redirect_Site{site, tramp, call, false}, .Ok
+	return Redirect_Site{site, trampoline, call, false}, .Ok
 }
 
 // A first instruction that a redirect can keep
@@ -132,10 +132,10 @@ first_instruction :: proc(code: []u8) -> (length, undo: int, ok: bool) {
 	return
 }
 
-place_stub :: proc(target, tramp: rawptr, variant: bool) -> bool {
-	target_addr := uintptr(target)
-	if target_addr >= mirror_start && target_addr + 5 <= mirror_end {
-		owner := target_addr + MIRROR_DELTA // the exe address whose mirror slot this is
+place_stub :: proc(target, trampoline: rawptr, variant: bool) -> bool {
+	target_address := uintptr(target)
+	if target_address >= mirror_start && target_address + 5 <= mirror_end {
+		owner := target_address + MIRROR_DELTA // the exe address whose mirror slot this is
 		if variant {
 			if near_symbol_start(owner) {
 				return false
@@ -147,49 +147,49 @@ place_stub :: proc(target, tramp: rawptr, variant: bool) -> bool {
 			}
 			used_mirror[owner] = true
 		}
-		rel32 := i64(uintptr(tramp)) - i64(target_addr + 5)
+		rel32 := i64(uintptr(trampoline)) - i64(target_address + 5)
 		if rel32 < i64(min(i32)) || rel32 > i64(max(i32)) {
 			return false
 		}
-		write_jmp_rel32(target, tramp)
+		write_jmp_rel32(target, trampoline)
 		return true
 	}
-	commit_at(target_addr, size_of(Jmp_Abs)) or_return
-	(^Jmp_Abs)(target)^ = {{{0xFF, 0x25}, 0}, tramp}
+	commit_at(target_address, size_of(Jmp_Abs)) or_return
+	(^Jmp_Abs)(target)^ = {{{0xFF, 0x25}, 0}, trampoline}
 	return true
 }
 
-tramp_block: rawptr
-tramp_used:  int
+trampoline_block: rawptr
+trampoline_used:  int
 
-// [lea rsp, [rsp+undo]] jmp [tramp+TRAMP_TARGET]
-alloc_tramp :: proc(undo := 0) -> (tramp: rawptr, ok: bool) {
-	if tramp_block == nil || tramp_used + TRAMP_SIZE > 4096 {
-		tramp_block = alloc_near(4096)
-		tramp_used = 0
-		if tramp_block == nil {
+// [lea rsp, [rsp+undo]] jmp [trampoline+TRAMPOLINE_TARGET]
+alloc_trampoline :: proc(undo := 0) -> (trampoline: rawptr, ok: bool) {
+	if trampoline_block == nil || trampoline_used + TRAMPOLINE_SIZE > 4096 {
+		trampoline_block = alloc_near(4096)
+		trampoline_used = 0
+		if trampoline_block == nil {
 			return
 		}
 	}
-	tramp = rawptr(uintptr(tramp_block) + uintptr(tramp_used))
-	tramp_used += TRAMP_SIZE
+	trampoline = rawptr(uintptr(trampoline_block) + uintptr(trampoline_used))
+	trampoline_used += TRAMPOLINE_SIZE
 
-	code := ([^]u8)(tramp)
-	lea_size := tramp_lea_size(undo)
+	code := ([^]u8)(trampoline)
+	lea_size := trampoline_lea_size(undo)
 	switch lea_size {
 	case size_of(Lea_Rsp_Imm8):
-		(^Lea_Rsp_Imm8)(tramp)^ = {{0x48, 0x8D, 0x64, 0x24}, i8(undo)}
+		(^Lea_Rsp_Imm8)(trampoline)^ = {{0x48, 0x8D, 0x64, 0x24}, i8(undo)}
 	case size_of(Lea_Rsp_Imm32):
-		(^Lea_Rsp_Imm32)(tramp)^ = {{0x48, 0x8D, 0xA4, 0x24}, i32(undo)}
+		(^Lea_Rsp_Imm32)(trampoline)^ = {{0x48, 0x8D, 0xA4, 0x24}, i32(undo)}
 	}
 	jmp_end := lea_size + size_of(Jmp_Rip)
-	(^Jmp_Rip)(&code[lea_size])^ = {{0xFF, 0x25}, i32(TRAMP_TARGET - jmp_end)}
-	slice.fill(code[jmp_end:TRAMP_TARGET], 0xCC)
-	(^u64)(rawptr(uintptr(tramp) + TRAMP_TARGET))^ = 0
-	return tramp, true
+	(^Jmp_Rip)(&code[lea_size])^ = {{0xFF, 0x25}, i32(TRAMPOLINE_TARGET - jmp_end)}
+	slice.fill(code[jmp_end:TRAMPOLINE_TARGET], 0xCC)
+	(^u64)(rawptr(uintptr(trampoline) + TRAMPOLINE_TARGET))^ = 0
+	return trampoline, true
 }
 
-tramp_lea_size :: proc(undo: int) -> int {
+trampoline_lea_size :: proc(undo: int) -> int {
 	switch {
 	case undo == 0:
 		return 0
@@ -199,15 +199,15 @@ tramp_lea_size :: proc(undo: int) -> int {
 	return size_of(Lea_Rsp_Imm32)
 }
 
-write_tramp_target :: proc "contextless" (tramp, body: rawptr) {
-	(^u64)(rawptr(uintptr(tramp) + TRAMP_TARGET))^ = u64(uintptr(body))
+write_trampoline_target :: proc "contextless" (trampoline, body: rawptr) {
+	(^u64)(rawptr(uintptr(trampoline) + TRAMPOLINE_TARGET))^ = u64(uintptr(body))
 }
 
 write_site_bytes :: proc "contextless" (redirect_site: Redirect_Site) {
 	if mirror_ok {
 		(^Jmp_Rel32)(redirect_site.site)^ = {0xE9, transmute(i32)[4]u8{0xCC, 0xCC, 0xCC, 0xCC}}
 	} else {
-		write_jmp_rel32(redirect_site.site, redirect_site.tramp)
+		write_jmp_rel32(redirect_site.site, redirect_site.trampoline)
 	}
 }
 
@@ -216,9 +216,9 @@ write_jmp_rel32 :: proc "contextless" (site, target: rawptr) {
 	(^Jmp_Rel32)(site)^ = {0xE9, rel32}
 }
 
-near_symbol_start :: proc(addr: uintptr) -> bool {
-	index, _ := slice.binary_search(exe_starts, addr - 11)
-	return index < len(exe_starts) && exe_starts[index] < addr + 5
+near_symbol_start :: proc(address: uintptr) -> bool {
+	index, _ := slice.binary_search(exe_starts, address - 11)
+	return index < len(exe_starts) && exe_starts[index] < address + 5
 }
 
 // `unwritten` holds keys of sites. The exe code is writable, so it cannot fail.

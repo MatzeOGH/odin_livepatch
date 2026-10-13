@@ -7,20 +7,20 @@ import "core:slice"
 import "core:strings"
 
 Redirect_Site :: struct {
-	site:    rawptr,
-	tramp:   rawptr,
-	call:    rawptr,
-	written: bool,
+	site:       rawptr,
+	trampoline: rawptr,
+	call:       rawptr,
+	written:    bool,
 }
 
 sites: map[rawptr]Redirect_Site // keyed by the exe entry
 
 call_target :: proc(merged: ^Merged, name: string) -> rawptr {
-	addr := merged.defs[name]
-	if redirect_site, found := sites[addr]; found {
+	address := merged.defs[name]
+	if redirect_site, found := sites[address]; found {
 		return redirect_site.call
 	}
-	return addr // a slot, or a procedure without a redirect
+	return address // a slot, or a procedure without a redirect
 }
 
 prepare_redirects :: proc(merged: ^Merged) -> Error {
@@ -57,7 +57,7 @@ slot_for :: proc(name: string) -> rawptr {
 	if slot, found := slots[name]; found {
 		return slot
 	}
-	slot, ok := alloc_tramp()
+	slot, ok := alloc_trampoline()
 	if ok {
 		slots[strings.clone(name)] = slot
 	}
@@ -65,11 +65,11 @@ slot_for :: proc(name: string) -> rawptr {
 }
 
 exe_room :: proc(entry: rawptr) -> int {
-	addr := uintptr(entry)
-	room := exe_section_end(addr) - int(addr)
-	next, _ := slice.binary_search(exe_starts, addr + 1)
+	address := uintptr(entry)
+	room := exe_section_end(address) - int(address)
+	next, _ := slice.binary_search(exe_starts, address + 1)
 	if next < len(exe_starts) {
-		room = min(room, int(exe_starts[next] - addr))
+		room = min(room, int(exe_starts[next] - address))
 	}
 	return max(room, 0)
 }
@@ -84,9 +84,9 @@ near_range :: proc(reach := BRANCH_REACH) -> (lo, hi: uintptr, ok: bool) {
 	return lo, exe_base() + size + window, true
 }
 
-is_near :: proc(addr: uintptr) -> bool {
+is_near :: proc(address: uintptr) -> bool {
 	lo, hi, ok := near_range()
-	return ok && addr >= lo && addr < hi
+	return ok && address >= lo && address < hi
 }
 
 alloc_near :: proc(size: int, commit := true, reach := BRANCH_REACH, from := uintptr(0)) -> rawptr {

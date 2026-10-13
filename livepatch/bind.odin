@@ -135,16 +135,16 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 				continue
 			}
 
-			addr, found := exe_symbol_address(name, merged.keys)
+			address, found := exe_symbol_address(name, merged.keys)
 			if !found {
-				addr, found = loaded_export(name)
+				address, found = loaded_export(name)
 			}
 
 			if !found {
 				return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 			}
 
-			if !is_near(uintptr(addr)) {
+			if !is_near(uintptr(address)) {
 				if !have_near_refs {
 					near_refs, have_near_refs = find_near_references(objects), true
 				}
@@ -154,11 +154,11 @@ resolve_externals :: proc(objects: []Loaded_Object, merged: ^Merged) -> Error {
 					if slot == nil {
 						return Unresolved_Symbol{error_text(name), error_text(filepath.base(object.path))}
 					}
-					write_tramp_target(slot, addr)
-					addr = slot
+					write_trampoline_target(slot, address)
+					address = slot
 				}
 			}
-			merged.externals[name] = addr
+			merged.externals[name] = address
 		}
 	}
 	return nil
