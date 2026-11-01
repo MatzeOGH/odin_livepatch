@@ -1,8 +1,9 @@
 package main
 
-// Linux only. patch() stops the other threads with LIVEPATCH_SIGNAL. A thread that blocks this
-// signal, like an audio thread that a C library starts, is not stopped: the patch must still
+// On Linux, patch() stops the other threads with LIVEPATCH_SIGNAL. A thread that blocks all
+// signals, like an audio thread that a C library starts, is not stopped: the patch must still
 // finish, and the thread keeps running. The thread does not run patched code.
+// On macOS, patch() stops threads without a signal: the patch must also finish.
 
 import lp "../../../livepatch"
 import "core:fmt"
@@ -23,8 +24,7 @@ ticks: int
 
 blocker :: proc() {
 	set: posix.sigset_t
-	posix.sigemptyset(&set)
-	posix.sigaddset(&set, posix.Signal(lp.LIVEPATCH_SIGNAL))
+	posix.sigfillset(&set) // holds LIVEPATCH_SIGNAL on Linux
 	posix.pthread_sigmask(.BLOCK, &set, nil)
 	for {
 		sync.atomic_add(&ticks, 1)

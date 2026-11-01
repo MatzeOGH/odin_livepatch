@@ -1,11 +1,12 @@
 package main
 
-// A debugger breakpoint (int3) is on the first byte of a procedure during the first patch.
+// A debugger breakpoint (int3, or brk on arm64) is on the entry of a procedure during the first patch.
 // After the debugger removes it, a call from the exe and a direct call from patch code must
 // both keep the stack correct.
 
 import lp "../../../livepatch"
 import "core:fmt"
+@(require) import "core:mem"
 import "core:os"
 @(require) import "core:sys/posix"
 @(require) import win "core:sys/windows"
@@ -39,23 +40,60 @@ leaf :: #force_no_inline proc() -> int {
 	return 10 + VERSION
 }
 
-// Makes the first bytes of a procedure writable, as a debugger does to write a breakpoint
-make_code_writable :: proc(entry: rawptr) {
-	when ODIN_OS == .Windows {
+// The breakpoint of a debugger: int3 on x64, brk #0 in place of a whole instruction on arm64
+when ODIN_ARCH == .arm64 {
+	Code_Unit :: u32
+	BREAKPOINT :: Code_Unit(0xD420_0000)
+} else {
+	Code_Unit :: u8
+	BREAKPOINT :: Code_Unit(0xCC)
+}
+
+when ODIN_OS == .Darwin {
+	foreign import libSystem "system:System"
+	@(default_calling_convention = "c")
+	foreign libSystem {
+		sys_icache_invalidate :: proc(start: rawptr, size: uint) ---
+		mach_task_self        :: proc() -> u32 ---
+		mach_vm_remap         :: proc(target_task: u32, address: ^u64, size, mask: u64, flags: i32, source_task: u32,
+		                              source_address: u64, copy: b32, current, maximum: ^i32, inheritance: u32) -> i32 ---
+	}
+	VM_FLAGS_OVERWRITE :: 0x4000 // with VM_FLAGS_FIXED, which is 0
+	VM_INHERIT_COPY    :: 1
+}
+
+// Writes code in the exe, as a debugger does to set or remove a breakpoint
+code_write :: proc(address: rawptr, unit: Code_Unit) {
+	when ODIN_OS == .Darwin {
+		// macOS does not let exe code be writable: map a changed copy over its page
+		PAGE :: 0x4000
+		page := uintptr(address) &~ (PAGE - 1)
+		copy_page := posix.mmap(nil, PAGE, {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS})
+		mem.copy_non_overlapping(copy_page, rawptr(page), PAGE)
+		(^Code_Unit)(uintptr(copy_page) + uintptr(address) - page)^ = unit
+		posix.mprotect(copy_page, PAGE, {.READ, .EXEC})
+		target := u64(page)
+		current, maximum: i32
+		task := mach_task_self()
+		mach_vm_remap(task, &target, PAGE, 0, VM_FLAGS_OVERWRITE, task, u64(uintptr(copy_page)), true, &current, &maximum, VM_INHERIT_COPY)
+		posix.munmap(copy_page, PAGE)
+		sys_icache_invalidate(rawptr(page), PAGE)
+	} else when ODIN_OS == .Windows {
 		old: win.DWORD
-		win.VirtualProtect(entry, 16, win.PAGE_EXECUTE_READWRITE, &old)
+		win.VirtualProtect(address, 16, win.PAGE_EXECUTE_READWRITE, &old)
+		(^Code_Unit)(address)^ = unit
 	} else {
 		// The two pages that the first 16 bytes can touch
-		page := rawptr(uintptr(entry) &~ 4095)
+		page := rawptr(uintptr(address) &~ 4095)
 		posix.mprotect(page, 8192, {.READ, .WRITE, .EXEC})
+		(^Code_Unit)(address)^ = unit
 	}
 }
 
-// Writes an int3 on the first byte of a procedure, as a debugger does for a breakpoint
-breakpoint_set :: proc(entry: rawptr) -> (original: u8) {
-	make_code_writable(entry)
-	original = (^u8)(entry)^
-	(^u8)(entry)^ = 0xCC
+// Writes a breakpoint on the entry of a procedure, as a debugger does
+breakpoint_set :: proc(entry: rawptr) -> (original: Code_Unit) {
+	original = (^Code_Unit)(entry)^
+	code_write(entry, BREAKPOINT)
 	return
 }
 
@@ -75,16 +113,19 @@ main :: proc() {
 	fmt.println("v1")
 	checks(1)
 	original := breakpoint_set(rawptr(guarded))
-	original_leaf: u8
+	original_leaf: Code_Unit
 	when LEAF_BREAKPOINT {
 		original_leaf = breakpoint_set(rawptr(leaf))
 	}
 	err := patch_to(2)
-	(^u8)(rawptr(guarded))^ = original // the debugger removes the breakpoint
+	code_write(rawptr(guarded), original) // the debugger removes the breakpoint
 	when LEAF_BREAKPOINT {
-		(^u8)(rawptr(leaf))^ = original_leaf
+		code_write(rawptr(leaf), original_leaf)
 	}
 	check("patch", err, nil)
+	if err != nil {
+		fmt.printfln("  first instructions: %x %x", original, original_leaf) // which one cannot be kept
+	}
 	checks(2)
 	check("patch", patch_to(3), nil)
 	checks(3)

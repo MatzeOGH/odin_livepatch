@@ -18,8 +18,12 @@ main :: proc() {
 	fmt.println("v1")
 	check("value", value(), 1)
 	for v in 2 ..= 3 {
-		_, rejected := patch_to(v).(lp.No_Map)
+		err := patch_to(v)
+		_, rejected := err.(lp.No_Map)
 		check("rejected: No_Map", rejected, true)
+		if !rejected {
+			fmt.println("  error:", err)
+		}
 		check("value: still v1", value(), 1)
 	}
 	os.exit(failures == 0 ? 0 : 1)
