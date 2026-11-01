@@ -1,38 +1,24 @@
 #+build windows amd64
 package livepatch
 
-@(require) import "base:runtime"
 @(require) import "core:os"
-@(require) import "core:time"
 @(require) import win "core:sys/windows"
 
 when LIVEPATCH {
 
-	Watcher :: struct {
-		directory:     win.HANDLE,
-		event:         win.HANDLE,
-		overlapped:    win.OVERLAPPED,
-		source_root:   string,
-		extensions:    []string,
-		allocator:     runtime.Allocator,
-		buffer:        [64 * 1024]u8,
-		pending:       bool,
-		pending_since: time.Tick,
-		reading:       bool,
-		active:        bool,
+	Watch_Platform :: struct {
+		directory:  win.HANDLE,
+		event:      win.HANDLE,
+		overlapped: win.OVERLAPPED,
+		buffer:     [64 * 1024]u8,
+		reading:    bool,
 	}
 
-	watch_start :: proc(source_root: string, extensions: []string = nil) -> (watcher: Watcher, err: Watch_Error) {
-		root := watch_root(source_root) or_return
-		defer if err != nil {
-			delete(root)
-		}
-
+	watch_platform_start :: proc(watcher: ^Watcher, root: string) -> Watch_Error {
 		wroot := win.utf8_to_utf16(root, context.temp_allocator)
 		if wroot == nil {
-			return {}, Watch_Start_Failed{kind = .Out_Of_Memory}
+			return Watch_Start_Failed{kind = .Out_Of_Memory}
 		}
-
 		directory := win.CreateFileW(
 			cstring16(raw_data(wroot)),
 			win.FILE_LIST_DIRECTORY,
@@ -43,109 +29,84 @@ when LIVEPATCH {
 			nil,
 		)
 		if directory == win.INVALID_HANDLE_VALUE {
-			return {}, Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(win.GetLastError())}
+			return Watch_Start_Failed{kind = .Cannot_Open_Dir, os_error = os.Platform_Error(win.GetLastError())}
 		}
-
 		event := win.CreateEventW(nil, true, false, nil)
 		if event == nil {
 			win.CloseHandle(directory)
-			return {}, Watch_Start_Failed{kind = .Cannot_Create_Event, os_error = os.Platform_Error(win.GetLastError())}
+			return Watch_Start_Failed{kind = .Cannot_Create_Event, os_error = os.Platform_Error(win.GetLastError())}
 		}
-
-		watcher = Watcher{
-			directory   = directory,
-			event       = event,
-			source_root = root,
-			extensions  = watch_clone_extensions(extensions),
-			allocator   = context.allocator,
-			active      = true,
-		}
-		return watcher, nil
-	}
-
-	watch_poll :: proc(watcher: ^Watcher, debounce := WATCH_DEBOUNCE) -> (changed: bool, err: Watch_Error) {
-		if watcher == nil || !watcher.active {
-			return false, nil
-		}
-		if !watcher.reading {
-			return false, watch_begin_read(watcher)
-		}
-
-		switch win.WaitForSingleObject(watcher.event, 0) {
-		case win.WAIT_TIMEOUT:
-		case win.WAIT_OBJECT_0:
-			bytes: win.DWORD
-			if !win.GetOverlappedResult(watcher.directory, &watcher.overlapped, &bytes, false) {
-				return false, Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
-			}
-			if bytes == 0 || watch_buffer_affects_sources(watcher, int(bytes)) {
-				watcher.pending = true
-				watcher.pending_since = time.tick_now()
-			}
-			watch_begin_read(watcher) or_return
-		case:
-			return false, Watch_Failed{kind = .Cannot_Poll, os_error = os.Platform_Error(win.GetLastError())}
-		}
-
-		if watcher.pending && time.tick_since(watcher.pending_since) >= debounce {
-			watcher.pending = false
-			return true, nil
-		}
-		return false, nil
-	}
-
-	watch_stop :: proc(watcher: ^Watcher) {
-		if watcher == nil || !watcher.active {
-			return
-		}
-		if watcher.reading {
-			bytes: win.DWORD
-			_ = win.CancelIoEx(watcher.directory, &watcher.overlapped)
-			_ = win.GetOverlappedResult(watcher.directory, &watcher.overlapped, &bytes, true)
-		}
-		_ = win.CloseHandle(watcher.event)
-		_ = win.CloseHandle(watcher.directory)
-		delete(watcher.source_root, watcher.allocator)
-		watch_delete_extensions(watcher.extensions, watcher.allocator)
-		watcher^ = {}
-	}
-
-	watch_begin_read :: proc(watcher: ^Watcher) -> Watch_Error {
-		watcher.overlapped = win.OVERLAPPED{hEvent = watcher.event}
-		_ = win.ResetEvent(watcher.event)
-		ok := win.ReadDirectoryChangesW(
-			watcher.directory,
-			raw_data(watcher.buffer[:]),
-			win.DWORD(len(watcher.buffer)),
-			true,
-			win.FILE_NOTIFY_CHANGE_FILE_NAME | win.FILE_NOTIFY_CHANGE_DIR_NAME | win.FILE_NOTIFY_CHANGE_LAST_WRITE,
-			nil,
-			&watcher.overlapped,
-			nil,
-		)
-		if !ok && win.GetLastError() != win.ERROR_IO_PENDING {
-			return Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
-		}
-		watcher.reading = true
+		watcher.platform = {directory = directory, event = event}
 		return nil
 	}
 
-	watch_buffer_affects_sources :: proc(watcher: ^Watcher, bytes: int) -> bool {
+	watch_platform_changes :: proc(watcher: ^Watcher) -> (affects: bool, err: Watch_Error) {
+		platform := &watcher.platform
+		if !platform.reading {
+			return false, watch_begin_read(platform)
+		}
+		switch win.WaitForSingleObject(platform.event, 0) {
+		case win.WAIT_TIMEOUT:
+			return false, nil
+		case win.WAIT_OBJECT_0:
+			bytes: win.DWORD
+			if !win.GetOverlappedResult(platform.directory, &platform.overlapped, &bytes, false) {
+				return false, Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
+			}
+			// 0 bytes: the buffer overflowed, and the changes are lost
+			affects = bytes == 0 || watch_buffer_affects_sources(platform.buffer[:bytes], watcher.extensions)
+			return affects, watch_begin_read(platform)
+		}
+		return false, Watch_Failed{kind = .Cannot_Poll, os_error = os.Platform_Error(win.GetLastError())}
+	}
+
+	watch_platform_stop :: proc(watcher: ^Watcher) {
+		platform := &watcher.platform
+		if platform.reading {
+			bytes: win.DWORD
+			_ = win.CancelIoEx(platform.directory, &platform.overlapped)
+			_ = win.GetOverlappedResult(platform.directory, &platform.overlapped, &bytes, true)
+		}
+		_ = win.CloseHandle(platform.event)
+		_ = win.CloseHandle(platform.directory)
+	}
+
+	watch_begin_read :: proc(platform: ^Watch_Platform) -> Watch_Error {
+		platform.overlapped = win.OVERLAPPED{hEvent = platform.event}
+		_ = win.ResetEvent(platform.event)
+		ok := win.ReadDirectoryChangesW(
+			platform.directory,
+			raw_data(platform.buffer[:]),
+			win.DWORD(len(platform.buffer)),
+			true,
+			win.FILE_NOTIFY_CHANGE_FILE_NAME | win.FILE_NOTIFY_CHANGE_DIR_NAME | win.FILE_NOTIFY_CHANGE_LAST_WRITE,
+			nil,
+			&platform.overlapped,
+			nil,
+		)
+		platform.reading = bool(ok) || win.GetLastError() == win.ERROR_IO_PENDING
+		if !platform.reading {
+			return Watch_Failed{kind = .Cannot_Read_Changes, os_error = os.Platform_Error(win.GetLastError())}
+		}
+		return nil
+	}
+
+	watch_buffer_affects_sources :: proc(buffer: []u8, extensions: []string) -> bool {
 		offset := 0
 		header_size := int(offset_of(win.FILE_NOTIFY_INFORMATION, FileName))
 		for {
-			if offset + header_size > bytes {
+			if offset + header_size > len(buffer) {
 				return true // a malformed record can hide a source change
 			}
-			info := (^win.FILE_NOTIFY_INFORMATION)(raw_data(watcher.buffer[offset:]))
+			info := (^win.FILE_NOTIFY_INFORMATION)(raw_data(buffer[offset:]))
 			name_bytes := int(info.FileNameLength)
-			if name_bytes % size_of(u16) != 0 || name_bytes > bytes - offset - header_size {
+			if name_bytes % size_of(u16) != 0 || name_bytes > len(buffer) - offset - header_size {
 				return true
 			}
 
 			name16 := ([^]u16)(raw_data(info.FileName[:]))[:name_bytes / size_of(u16)]
 			name := win.utf16_to_utf8(name16, context.temp_allocator) or_else ""
-			if watch_change_affects_sources(name, watcher.extensions) {
+			if watch_change_affects_sources(name, extensions) {
 				return true
 			}
 
@@ -153,7 +114,7 @@ when LIVEPATCH {
 			if next == 0 {
 				return false
 			}
-			if next < header_size || next > bytes - offset {
+			if next < header_size || next > len(buffer) - offset {
 				return true
 			}
 			offset += next

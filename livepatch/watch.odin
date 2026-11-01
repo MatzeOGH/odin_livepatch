@@ -1,35 +1,77 @@
-#+build windows amd64, linux amd64
+#+build windows amd64, linux amd64, darwin arm64
 package livepatch
 
 @(require) import "base:runtime"
 @(require) import "core:os"
 @(require) import "core:path/filepath"
 @(require) import "core:strings"
+@(require) import "core:time"
 
 when LIVEPATCH {
+
+	Watcher :: struct {
+		platform:      Watch_Platform,
+		extensions:    []string,
+		allocator:     runtime.Allocator, // of the extensions and of the strings of the platform part
+		pending:       bool,
+		pending_since: time.Tick,
+		active:        bool,
+	}
+
+	watch_start :: proc(source_root: string, extensions: []string = nil) -> (watcher: Watcher, err: Watch_Error) {
+		root := watch_root(source_root) or_return
+		watcher = Watcher{
+			extensions = watch_clone_extensions(extensions),
+			allocator  = context.allocator,
+			active     = true,
+		}
+		if start_err := watch_platform_start(&watcher, root); start_err != nil {
+			watch_delete_extensions(watcher.extensions, watcher.allocator)
+			return {}, start_err
+		}
+		return watcher, nil
+	}
+
+	watch_poll :: proc(watcher: ^Watcher, debounce := WATCH_DEBOUNCE) -> (changed: bool, err: Watch_Error) {
+		if watcher == nil || !watcher.active {
+			return false, nil
+		}
+		if watch_platform_changes(watcher) or_return {
+			watcher.pending = true
+			watcher.pending_since = time.tick_now()
+		}
+		if watcher.pending && time.tick_since(watcher.pending_since) >= debounce {
+			watcher.pending = false
+			return true, nil
+		}
+		return false, nil
+	}
+
+	watch_stop :: proc(watcher: ^Watcher) {
+		if watcher == nil || !watcher.active {
+			return
+		}
+		watch_platform_stop(watcher)
+		watch_delete_extensions(watcher.extensions, watcher.allocator)
+		watcher^ = {}
+	}
 
 	watch_root :: proc(source_root: string) -> (root: string, err: Watch_Error) {
 		if len(source_root) == 0 {
 			return "", Watch_Start_Failed{kind = .Empty_Path}
 		}
-
-		path := source_root
-		if !filepath.is_abs(path) {
-			exe_dir, exe_err := os.get_executable_directory(context.temp_allocator)
-			if exe_err != nil {
-				return "", Watch_Start_Failed{kind = .Exe_Path_Unknown}
-			}
-			path, exe_err = filepath.join({exe_dir, path}, context.temp_allocator)
-			if exe_err != nil {
-				return "", Watch_Start_Failed{kind = .Out_Of_Memory}
-			}
+		if filepath.is_abs(source_root) {
+			return source_root, nil
 		}
-
-		stored_root, clone_err := strings.clone(path)
-		if clone_err != nil {
+		exe_dir, exe_err := os.get_executable_directory(context.temp_allocator)
+		if exe_err != nil {
+			return "", Watch_Start_Failed{kind = .Exe_Path_Unknown}
+		}
+		joined, join_err := filepath.join({exe_dir, source_root}, context.temp_allocator)
+		if join_err != nil {
 			return "", Watch_Start_Failed{kind = .Out_Of_Memory}
 		}
-		return stored_root, nil
+		return joined, nil
 	}
 
 	watch_clone_extensions :: proc(extensions: []string) -> []string {
@@ -61,6 +103,11 @@ when LIVEPATCH {
 			}
 		}
 		return false
+	}
+
+	// Ignore .git and similar directories
+	watch_skips_directory :: proc(name: string) -> bool {
+		return strings.has_prefix(name, ".") || strings.has_suffix(name, ".dSYM")
 	}
 
 }
