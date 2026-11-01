@@ -11,7 +11,7 @@ Redirect :: struct {
 	name: string,
 }
 
-// The GDB JIT interface hook (platform_linux.odin)
+// The GDB JIT interface hook (jit.odin)
 JIT_REGISTER_NAME :: "__jit_debug_register_code"
 
 Merged :: struct {
